@@ -1511,7 +1511,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         <p id="page-subtitle">متصل بمحرك FreeRADIUS 3.x وجداول radcheck / radacct / radgroupreply</p>
       </div>
       <div style="display:flex; gap:10px; align-items:center;">
-        <span class="status-pill">🟢 FreeRADIUS 3.x Engine: متصل ونشط</span>
+        <span class="status-pill" id="system-status-pill">⏳ جاري فحص الاتصال بالسيرفر...</span>
         <button class="btn btn-light" onclick="refreshAll()">🔄 تحديث البيانات</button>
       </div>
     </header>
@@ -1538,7 +1538,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 <span style="margin-left:16px;">🟦 التحميل (Download Mbps)</span>
                 <span>🟧 الرفع (Upload Mbps)</span>
               </div>
-              <span class="mono" style="font-weight:700; color:#4f46e5;">الذروة الحالية: 128 Mbps</span>
+              <span class="mono" id="traffic-peak-label" style="font-weight:700; color:#4f46e5;">الذروة الحالية: 0 Mbps</span>
             </div>
           </div>
 
@@ -1553,7 +1553,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 <span style="margin-left:16px;">🟩 عدد المتصلين (مشترك)</span>
                 <span>🟪 الاستهلاك الكلي (GB)</span>
               </div>
-              <span style="font-weight:700; color:#059669;">ساعة الذروة: 21:00 مساءً</span>
+              <span id="peak-hour-label" style="font-weight:700; color:#059669;">ساعة الذروة: -</span>
             </div>
           </div>
         </div>
@@ -1646,7 +1646,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 oninput="loadSessions()"
                 style="padding:8px 12px; border:1px solid #cbd5e1; border-radius:10px; font-size:13px; width:240px;"
               />
-              <button class="btn btn-primary" onclick="simulateNewSession()">▶️ محاكاة دخول مشترك جديد</button>
+              <button class="btn btn-primary" id="simulate-btn" onclick="simulateNewSession()">▶️ محاكاة دخول مشترك جديد</button>
             </div>
           </div>
 
@@ -1868,24 +1868,95 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       </section>
 
       <!-- ================================================================= -->
-      <!-- TAB 7: FREERADIUS INSPECTOR                                       -->
+      <!-- TAB 7: FREERADIUS INSPECTOR & MIKROTIK LINKING                    -->
       <!-- ================================================================= -->
       <section id="tab-radius_db" style="display:none;">
-        <div class="card">
-          <div class="card-title">🛡️ راوترات MikroTik المعرّفة في جدول nas</div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>IP الراوتر (nasname)</th>
-                  <th>الاسم المختصر (shortname)</th>
-                  <th>RADIUS Secret</th>
-                  <th>الوصف</th>
-                </tr>
-              </thead>
-              <tbody id="nas-tbody"></tbody>
-            </table>
+        <!-- Quick MikroTik RouterOS Link Script Generator -->
+        <div class="card" style="border-color:#c7d2fe; background:#f8fafc;">
+          <div class="card-title">
+            <span>🔗 أوامر ربط راوتر MikroTik بالسيرفر مباشرة (انسخ والصق في WinBox Terminal)</span>
+            <button class="btn btn-primary btn-xs" onclick="copyMikrotikScript()">📋 نسخ الأوامر</button>
+          </div>
+          <p style="font-size:12px; color:#475569; margin-bottom:10px;">
+            تم توليد هذه الأوامر تلقائياً بعنوان IP السيرفر الحالي (<b class="mono" id="vps-host-display">...</b>). تأكد من إضافة IP الراوتر في جدول <b>nas</b> بالأسفل بنفس الـ <b>Secret</b>، وفتح المنافذ <code>1812/udp, 1813/udp, 3799/udp</code> في جدار الحماية.
+          </p>
+          <pre id="mikrotik-script-box" dir="ltr" style="background:#0f172a; color:#38bdf8; padding:14px; border-radius:10px; font-size:12px; overflow-x:auto; line-height:1.6;"></pre>
+        </div>
+
+        <div class="grid-2">
+          <!-- Add & List NAS Routers -->
+          <div class="card">
+            <div class="card-title">🛡️ راوترات MikroTik المعرّفة في جدول nas</div>
+            <form onsubmit="handleAddNas(event)" style="margin-bottom:14px; padding-bottom:14px; border-bottom:1px solid var(--border);">
+              <div class="form-grid">
+                <div class="field">
+                  <label>IP الراوتر (أو IP الخط العام للراوتر)</label>
+                  <input type="text" id="nas-ip" dir="ltr" placeholder="مثال: 10.10.0.1 أو IP العام" required />
+                </div>
+                <div class="field">
+                  <label>اسم الراوتر (shortname)</label>
+                  <input type="text" id="nas-short" dir="ltr" placeholder="MikroTik-Main" required />
+                </div>
+                <div class="field">
+                  <label>كلمة السر (RADIUS Secret)</label>
+                  <input type="text" id="nas-secret" dir="ltr" value="RadSecret2026!" required />
+                </div>
+                <div class="field">
+                  <label>الوصف</label>
+                  <input type="text" id="nas-desc" placeholder="الراوتر الرئيسي" />
+                </div>
+              </div>
+              <button type="submit" class="btn btn-primary btn-xs">➕ إضافة / تحديث راوتر في جدول nas</button>
+            </form>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>IP الراوتر</th>
+                    <th>الاسم</th>
+                    <th>Secret</th>
+                    <th>الوصف</th>
+                    <th>حذف</th>
+                  </tr>
+                </thead>
+                <tbody id="nas-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Add & List Access Points / Modems Mapping -->
+          <div class="card">
+            <div class="card-title">📡 ربط المودمات والأكسس بوينت (Access Points IP)</div>
+            <form onsubmit="handleAddAp(event)" style="margin-bottom:14px; padding-bottom:14px; border-bottom:1px solid var(--border);">
+              <div class="form-grid">
+                <div class="field">
+                  <label>اسم سيرفر الهوت سبوت (Called-Station-Id)</label>
+                  <input type="text" id="ap-match" dir="ltr" placeholder="hotspot1 أو hs-north" required />
+                </div>
+                <div class="field">
+                  <label>IP المودم / الأكسس بوينت الحقيقي</label>
+                  <input type="text" id="ap-ip" dir="ltr" placeholder="192.168.10.11" required />
+                </div>
+                <div class="field">
+                  <label>اسم الموقع / المودم</label>
+                  <input type="text" id="ap-name" placeholder="مودم البرج الشمالي" required />
+                </div>
+              </div>
+              <button type="submit" class="btn btn-emerald btn-xs">➕ ربط مودم / أكسس بوينت</button>
+            </form>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Called-Station-Id</th>
+                    <th>IP المودم</th>
+                    <th>اسم المودم</th>
+                    <th>حذف</th>
+                  </tr>
+                </thead>
+                <tbody id="ap-tbody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
 
@@ -2488,6 +2559,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     function renderPrintPreview() {
+      saveBrandSettings();
       const container = document.getElementById('print-preview-container');
       if (!currentPrintableBatch) {
         container.innerHTML = '';
@@ -2637,6 +2709,94 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
+    function loadBrandSettings() {
+      try {
+        const saved = JSON.parse(localStorage.getItem('radiuspro_brand') || '{}');
+        if (saved.name) document.getElementById('brand-name').value = saved.name;
+        if (saved.url) document.getElementById('brand-url').value = saved.url;
+        if (saved.phone) document.getElementById('brand-phone').value = saved.phone;
+      } catch {}
+    }
+
+    function saveBrandSettings() {
+      try {
+        localStorage.setItem('radiuspro_brand', JSON.stringify({
+          name: document.getElementById('brand-name').value,
+          url: document.getElementById('brand-url').value,
+          phone: document.getElementById('brand-phone').value
+        }));
+      } catch {}
+    }
+
+    function copyMikrotikScript() {
+      const box = document.getElementById('mikrotik-script-box');
+      if (!box) return;
+      navigator.clipboard.writeText(box.textContent || '')
+        .then(() => showToast('success', 'تم نسخ أوامر MikroTik! الصقها في New Terminal داخل WinBox'))
+        .catch(() => showToast('info', 'حدد النص وانسخه يدوياً'));
+    }
+
+    async function handleAddNas(e) {
+      e.preventDefault();
+      try {
+        const payload = {
+          nasname: document.getElementById('nas-ip').value.trim(),
+          shortname: document.getElementById('nas-short').value.trim(),
+          secret: document.getElementById('nas-secret').value.trim(),
+          description: document.getElementById('nas-desc').value.trim()
+        };
+        await api('/api/radius/nas', { method: 'POST', body: JSON.stringify(payload) });
+        showToast('success', 'تم حفظ راوتر MikroTik في جدول nas بنجاح');
+        document.getElementById('nas-ip').value = '';
+        document.getElementById('nas-short').value = '';
+        document.getElementById('nas-desc').value = '';
+        refreshAll();
+      } catch (err) {
+        showToast('error', err.message);
+      }
+    }
+
+    async function deleteNas(id) {
+      if (!confirm('هل تريد حذف هذا الراوتر من جدول nas؟')) return;
+      try {
+        await api('/api/radius/nas/' + id, { method: 'DELETE' });
+        showToast('success', 'تم حذف الراوتر من جدول nas');
+        refreshAll();
+      } catch (err) {
+        showToast('error', err.message);
+      }
+    }
+
+    async function handleAddAp(e) {
+      e.preventDefault();
+      try {
+        const payload = {
+          match_value: document.getElementById('ap-match').value.trim(),
+          ap_ip: document.getElementById('ap-ip').value.trim(),
+          ap_name: document.getElementById('ap-name').value.trim()
+        };
+        await api('/api/radius/access-points', { method: 'POST', body: JSON.stringify(payload) });
+        showToast('success', 'تم ربط المودم / الأكسس بوينت بنجاح');
+        document.getElementById('ap-match').value = '';
+        document.getElementById('ap-ip').value = '';
+        document.getElementById('ap-name').value = '';
+        refreshAll();
+      } catch (err) {
+        showToast('error', err.message);
+      }
+    }
+
+    async function deleteAp(id) {
+      if (!confirm('هل تريد حذف تعريف هذا المودم؟')) return;
+      try {
+        await api('/api/radius/access-points/' + id, { method: 'DELETE' });
+        showToast('success', 'تم حذف تعريف المودم');
+        refreshAll();
+      } catch (err) {
+        showToast('error', err.message);
+      }
+    }
+
     async function refreshAll() {
       try {
         const [sys, kpis, profiles, batches, resData, insp] = await Promise.all([
@@ -2647,6 +2807,21 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           api('/api/resellers'),
           api('/api/radius/inspector')
         ]);
+
+        // 0. Live Engine & FreeRADIUS Status Pill + Simulate Button visibility
+        const pill = document.getElementById('system-status-pill');
+        const simBtn = document.getElementById('simulate-btn');
+        if (sys.engine === 'MARIADB_FREERADIUS_LIVE') {
+          if (simBtn) simBtn.style.display = 'none';
+          const frOk = sys.freeradiusActive === true;
+          pill.style.background = frOk ? '#ecfdf5' : '#fef3c7';
+          pill.style.borderColor = frOk ? '#a7f3d0' : '#fcd34d';
+          pill.style.color = frOk ? '#065f46' : '#92400e';
+          pill.innerHTML = \`<span>\${frOk ? '🟢' : '🟡'} FreeRADIUS (\${sys.freeradiusStatus || 'active'}) | MariaDB متصل | \${sys.nasCount || 0} راوتر NAS</span>\`;
+        } else {
+          if (simBtn) simBtn.style.display = 'inline-flex';
+          pill.innerHTML = \`<span>🟠 وضع المعاينة المحلي (In-Memory Demo)</span>\`;
+        }
 
         // 1. Actor selector
         const actorSelect = document.getElementById('actor-select');
@@ -2712,16 +2887,21 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         \`;
 
         // 3. Chart 1: Live Traffic with Numbers above every bar
-        document.getElementById('traffic-chart').innerHTML = kpis.trafficHistory.map((pt) => \`
+        const maxTrafficMbps = Math.max(10, ...(kpis.trafficHistory || []).map((pt) => Math.max(Number(pt.downloadMbps) || 0, Number(pt.uploadMbps) || 0)));
+        const peakTrafficMbps = Math.max(0, ...(kpis.trafficHistory || []).map((pt) => Number(pt.downloadMbps) || 0));
+        const trafficPeakEl = document.getElementById('traffic-peak-label');
+        if (trafficPeakEl) trafficPeakEl.textContent = 'الذروة المسجلة: ' + peakTrafficMbps + ' Mbps';
+
+        document.getElementById('traffic-chart').innerHTML = (kpis.trafficHistory || []).map((pt) => \`
           <div class="bar-col">
             <div class="bar-pair">
               <div class="bar-wrap">
                 <span class="bar-num" style="color:#4338ca;">\${pt.downloadMbps}M</span>
-                <div class="bar-dl" style="height:\${Math.min(100, (pt.downloadMbps / 140) * 100)}%"></div>
+                <div class="bar-dl" style="height:\${Math.max(4, Math.min(100, (pt.downloadMbps / maxTrafficMbps) * 100))}%"></div>
               </div>
               <div class="bar-wrap">
                 <span class="bar-num" style="color:#d97706;">\${pt.uploadMbps}M</span>
-                <div class="bar-ul" style="height:\${Math.min(100, (pt.uploadMbps / 140) * 100)}%"></div>
+                <div class="bar-ul" style="height:\${Math.max(4, Math.min(100, (pt.uploadMbps / maxTrafficMbps) * 100))}%"></div>
               </div>
             </div>
             <span class="mono" style="font-size:11px; font-weight:700; color:#475569;">\${pt.time}</span>
@@ -2729,16 +2909,27 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         \`).join('');
 
         // 4. Chart 2: Peak Hours (Users Count + Total GB Consumed) with Numbers above every bar
-        document.getElementById('peak-chart').innerHTML = kpis.peakHoursHistory.map((pt) => \`
+        const peakHistory = kpis.peakHoursHistory || [];
+        const maxPeakUsers = Math.max(5, ...peakHistory.map((pt) => Number(pt.users) || 0));
+        const maxPeakGb = Math.max(1, ...peakHistory.map((pt) => Number(pt.totalGb) || 0));
+        const bestPeak = peakHistory.reduce((best, cur) => ((cur.users || 0) > (best.users || 0) ? cur : best), { users: 0, time: '--:--' });
+        const peakHourEl = document.getElementById('peak-hour-label');
+        if (peakHourEl) {
+          peakHourEl.textContent = bestPeak.users > 0
+            ? ('ساعة الذروة: ' + bestPeak.time + ' (' + bestPeak.users + ' مشترك)')
+            : 'ساعة الذروة: لا توجد جلسات مسجلة خلال 24 ساعة';
+        }
+
+        document.getElementById('peak-chart').innerHTML = peakHistory.map((pt) => \`
           <div class="bar-col">
             <div class="bar-pair">
               <div class="bar-wrap">
                 <span class="bar-num" style="color:#059669;">\${pt.users}👤</span>
-                <div class="bar-peak" style="height:\${Math.min(100, (pt.users / 95) * 100)}%"></div>
+                <div class="bar-peak" style="height:\${Math.max(4, Math.min(100, (pt.users / maxPeakUsers) * 100))}%"></div>
               </div>
               <div class="bar-wrap">
                 <span class="bar-num" style="color:#4f46e5;">\${pt.totalGb}G</span>
-                <div class="bar-gb" style="height:\${Math.min(100, (pt.totalGb / 65) * 100)}%"></div>
+                <div class="bar-gb" style="height:\${Math.max(4, Math.min(100, (pt.totalGb / maxPeakGb) * 100))}%"></div>
               </div>
             </div>
             <span class="mono" style="font-size:11px; font-weight:700; color:#475569;">\${pt.time}</span>
@@ -2746,12 +2937,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         \`).join('');
 
         // 5. Recent Batches
-        document.getElementById('recent-batches-list').innerHTML = kpis.recentBatches.map((b) => \`
+        document.getElementById('recent-batches-list').innerHTML = kpis.recentBatches.length === 0
+          ? '<div style="padding:18px; text-align:center; color:#64748b; font-size:12px;">لا توجد دفعات مولّدة بعد — اضغط "توليد دفعة جديدة"</div>'
+          : kpis.recentBatches.map((b) => \`
           <div style="padding:12px 14px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; display:flex; justify-content:space-between; align-items:center;">
             <div>
               <div class="mono" style="font-weight:800; color:#4338ca; font-size:12px;">\${b.batch_code}</div>
-              <div style="font-weight:700; font-size:13px; margin-top:2px;">\${b.profile_display_name} (\${b.quantity} كرت)</div>
-              <div style="font-size:11px; color:#64748b;">\${b.reseller_name}</div>
+              <div style="font-weight:700; font-size:13px; margin-top:2px;">\${b.profile_display_name || '-'} (\${b.quantity} كرت)</div>
+              <div style="font-size:11px; color:#64748b;">\${b.reseller_name || ''}</div>
             </div>
             <button class="btn btn-light btn-xs" onclick="loadBatchForPrint(\${b.id})">🖨️ طباعة</button>
           </div>
@@ -2760,7 +2953,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         // 6. Populate Profile Selectors
         const genProfileSelect = document.getElementById('gen-profile');
         const currentSelectedProf = genProfileSelect.value;
-        genProfileSelect.innerHTML = profiles.map((p) => \`
+        genProfileSelect.innerHTML = profiles.length === 0
+          ? '<option value="">-- أنشئ باقة (Profile) أولاً من تبويب الباقات --</option>'
+          : profiles.map((p) => \`
           <option value="\${p.id}" \${String(p.id) === String(currentSelectedProf) ? 'selected' : ''}>
             \${p.display_name} (\${p.speed_limit}) - التكلفة: \${p.cost_price} | البيع: \${p.price}
           </option>
@@ -2775,12 +2970,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         \`).join('');
 
         // 7. Batches Table
-        document.getElementById('batches-tbody').innerHTML = batches.map((b) => \`
+        document.getElementById('batches-tbody').innerHTML = batches.length === 0
+          ? '<tr><td colspan="7" style="text-align:center; padding:24px; color:#64748b;">لا توجد دفعات مولّدة في قاعدة البيانات بعد</td></tr>'
+          : batches.map((b) => \`
           <tr>
             <td class="mono" style="font-weight:800; color:#4338ca;">\${b.batch_code}</td>
-            <td style="font-weight:700;">\${b.profile_display_name}</td>
+            <td style="font-weight:700;">\${b.profile_display_name || '-'}</td>
             <td>\${b.quantity} كرت</td>
-            <td>\${b.reseller_name}</td>
+            <td>\${b.reseller_name || '-'}</td>
             <td style="font-weight:800; color:#059669;">\${b.total_cost} ر.س</td>
             <td style="font-size:12px; color:#64748b;">\${new Date(b.created_at).toLocaleString('ar-SA')}</td>
             <td>
@@ -2797,7 +2994,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         }
 
         // 8. Profiles Tab
-        document.getElementById('profiles-list').innerHTML = profiles.map((p) => \`
+        document.getElementById('profiles-list').innerHTML = profiles.length === 0
+          ? '<div class="card" style="text-align:center; padding:30px; color:#64748b;">لا توجد باقات حالياً في قاعدة البيانات. قم بإضافة أول باقة من النموذج الجانبي للبدء ببيع الكروت.</div>'
+          : profiles.map((p) => \`
           <div class="card">
             <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
               <div>
@@ -2847,7 +3046,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           </div>
         \`).join('');
 
-        document.getElementById('transactions-list').innerHTML = resData.transactions.map((t) => \`
+        document.getElementById('transactions-list').innerHTML = (resData.transactions || []).length === 0
+          ? '<div style="padding:18px; text-align:center; color:#64748b; font-size:12px;">لا توجد حركات مالية مسجلة حتى الآن</div>'
+          : resData.transactions.map((t) => \`
           <div style="padding:10px 12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; display:flex; justify-content:space-between; font-size:12px;">
             <div>
               <span class="tag \${t.type === 'DEPOSIT' ? 'tag-emerald' : 'tag-amber'}">\${t.type === 'DEPOSIT' ? 'إيداع' : 'خصم دفعة'}</span>
@@ -2857,18 +3058,58 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           </div>
         \`).join('');
 
-        // 11. Inspector Tab
-        document.getElementById('nas-tbody').innerHTML = insp.nas.map((n) => \`
+        // 11. Inspector Tab & Live MikroTik RouterOS Link Script Generator
+        const vpsHost = window.location.hostname || 'YOUR_VPS_IP';
+        const defaultSecret = (insp.nas && insp.nas[0] && insp.nas[0].secret) ? insp.nas[0].secret : 'RadSecret2026!';
+        const vpsHostEl = document.getElementById('vps-host-display');
+        if (vpsHostEl) vpsHostEl.textContent = vpsHost;
+        const scriptBox = document.getElementById('mikrotik-script-box');
+        if (scriptBox) {
+          scriptBox.textContent = [
+            '# 1. ربط راوتر MikroTik بخدمة RADIUS على السيرفر:',
+            '/radius add service=hotspot address=' + vpsHost + ' secret="' + defaultSecret + '" authentication-port=1812 accounting-port=1813 timeout=3s src-address=0.0.0.0',
+            '',
+            '# 2. تفعيل الفصل الفوري (CoA / PoD) من السيرفر عبر منفذ 3799:',
+            '/radius incoming set accept=yes port=3799',
+            '',
+            '# 3. تفعيل استخدام RADIUS والمحاسبة اللحظية في بروفايل الهوت سبوت:',
+            '/ip hotspot profile set [find] use-radius=yes radius-accounting=yes radius-interim-update=00:02:00 nas-port-type=wireless-802.11',
+            '',
+            '# 4. السماح بتحميل رمز QR أو روابط الدخول المباشر (اختياري):',
+            '/ip hotspot walled-garden ip add dst-address=' + vpsHost + ' action=accept'
+          ].join('\\n');
+        }
+
+        document.getElementById('nas-tbody').innerHTML = (insp.nas || []).length === 0
+          ? '<tr><td colspan="5" style="text-align:center; padding:16px; color:#64748b;">لا توجد راوترات مضافة في جدول nas بعد</td></tr>'
+          : insp.nas.map((n) => \`
           <tr>
-            <td class="mono">\${n.id}</td>
             <td class="mono" dir="ltr" style="font-weight:800; color:#4338ca;">\${n.nasname}</td>
             <td class="mono" dir="ltr">\${n.shortname}</td>
             <td class="mono" dir="ltr" style="color:#059669;">\${n.secret}</td>
-            <td>\${n.description}</td>
+            <td>\${n.description || '-'}</td>
+            <td><button class="btn btn-danger btn-xs" onclick="deleteNas(\${n.id})">🗑️</button></td>
           </tr>
         \`).join('');
 
-        document.getElementById('radcheck-tbody').innerHTML = insp.radcheckSample.map((r) => \`
+        const apTbody = document.getElementById('ap-tbody');
+        if (apTbody) {
+          const aps = insp.accessPoints || [];
+          apTbody.innerHTML = aps.length === 0
+            ? '<tr><td colspan="4" style="text-align:center; padding:16px; color:#64748b;">لم يتم تعريف مودمات بعد (يعرض IP الراوتر افتراضياً)</td></tr>'
+            : aps.map((ap) => \`
+            <tr>
+              <td class="mono" dir="ltr" style="font-weight:700;">\${ap.match_value}</td>
+              <td class="mono" dir="ltr" style="color:#4338ca; font-weight:800;">\${ap.ap_ip}</td>
+              <td>\${ap.ap_name}</td>
+              <td><button class="btn btn-danger btn-xs" onclick="deleteAp(\${ap.id})">🗑️</button></td>
+            </tr>
+          \`).join('');
+        }
+
+        document.getElementById('radcheck-tbody').innerHTML = (insp.radcheckSample || []).length === 0
+          ? '<tr><td colspan="4" style="text-align:center; padding:16px; color:#64748b;">جدول radcheck فارغ حالياً — قم بتوليد دفعة كروت</td></tr>'
+          : insp.radcheckSample.map((r) => \`
           <tr>
             <td class="mono" style="font-weight:800; color:#4338ca;">\${r.username}</td>
             <td class="mono">\${r.attribute}</td>
@@ -2877,7 +3118,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           </tr>
         \`).join('');
 
-        document.getElementById('radusergroup-tbody').innerHTML = insp.radusergroupSample.map((u) => \`
+        document.getElementById('radusergroup-tbody').innerHTML = (insp.radusergroupSample || []).length === 0
+          ? '<tr><td colspan="3" style="text-align:center; padding:16px; color:#64748b;">جدول radusergroup فارغ حالياً</td></tr>'
+          : insp.radusergroupSample.map((u) => \`
           <tr>
             <td class="mono" style="font-weight:800; color:#4338ca;">\${u.username}</td>
             <td class="mono" style="color:#b45309;">\${u.groupname}</td>
@@ -2890,6 +3133,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
+    loadBrandSettings();
     refreshAll();
   </script>
 </body>
@@ -2904,9 +3148,12 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname;
 
   const actorIdHeader = Number(req.headers['x-actor-id']) || 1;
-  const actor = store.resellers.find((r) => r.id === actorIdHeader) || store.resellers[0];
 
   try {
+    const actor = dbStore
+      ? await dbStore.getActor(actorIdHeader)
+      : (store.resellers.find((r) => r.id === actorIdHeader) || store.resellers[0]);
+
     if (pathname === '/api/system/status' && req.method === 'GET') {
       if (dbStore) {
         const sys = await dbStore.getSystemStatus(actorIdHeader);
@@ -3057,6 +3304,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/vouchers/batches' && req.method === 'GET') {
+      if (dbStore) {
+        const batches = await dbStore.getBatches(actor);
+        return sendJson(res, 200, batches);
+      }
       const batches =
         actor.role === 'SUPER_ADMIN'
           ? store.voucher_batches
@@ -3066,6 +3317,10 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/api/vouchers/batches' && req.method === 'POST') {
       const body = await parseBody(req);
+      if (dbStore) {
+        const result = await dbStore.generateBatch(body, actor);
+        return sendJson(res, 201, result);
+      }
       const result = store.generateBatch(body, actor);
       return sendJson(res, 201, result);
     }
@@ -3073,6 +3328,10 @@ const server = http.createServer(async (req, res) => {
     const printMatch = pathname.match(/^\/api\/vouchers\/batches\/(\d+)\/print$/);
     if (printMatch && req.method === 'GET') {
       const batchId = Number(printMatch[1]);
+      if (dbStore) {
+        const printable = await dbStore.getBatchForPrint(batchId, actor);
+        return sendJson(res, 200, printable);
+      }
       const batch = store.voucher_batches.find((b) => b.id === batchId);
       if (!batch) return sendJson(res, 404, { message: 'الدفعة غير موجودة' });
       if (actor.role !== 'SUPER_ADMIN' && batch.reseller_id !== actor.id) {
@@ -3107,6 +3366,10 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 403, { message: 'إدارة الباقات متاحة للمدير العام فقط' });
       }
       const body = await parseBody(req);
+      if (dbStore) {
+        const created = await dbStore.createProfile(body);
+        return sendJson(res, 201, created);
+      }
       const created = store.createProfile(body);
       return sendJson(res, 201, created);
     }
@@ -3115,6 +3378,10 @@ const server = http.createServer(async (req, res) => {
     if (delProfMatch && req.method === 'DELETE') {
       if (actor.role !== 'SUPER_ADMIN') {
         return sendJson(res, 403, { message: 'حذف الباقات متاح للمدير العام فقط' });
+      }
+      if (dbStore) {
+        const result = await dbStore.deleteProfile(Number(delProfMatch[1]));
+        return sendJson(res, 200, result);
       }
       store.deleteProfile(Number(delProfMatch[1]));
       return sendJson(res, 200, { success: true });
@@ -3156,6 +3423,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/sessions/simulate' && req.method === 'POST') {
+      if (dbStore) {
+        return sendJson(res, 400, { message: 'النظام متصل بقاعدة البيانات الحية، لا يمكن إدراج جلسات وهمية' });
+      }
       const unusedCard = store.voucher_cards.find((c) => c.status === 'UNUSED');
       const modem = MODEM_AP_LIST[randomInt(0, MODEM_AP_LIST.length)];
       const username = unusedCard ? unusedCard.username : `77${Math.floor(100000 + Math.random() * 900000)}`;
@@ -3198,6 +3468,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/resellers' && req.method === 'GET') {
+      if (dbStore) {
+        const data = await dbStore.getResellers(actor);
+        return sendJson(res, 200, data);
+      }
       if (actor.role !== 'SUPER_ADMIN') {
         return sendJson(res, 200, {
           resellers: store.resellers.filter((r) => r.id === actor.id),
@@ -3215,6 +3489,10 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 403, { message: 'إضافة الموزعين متاحة للمدير العام فقط' });
       }
       const body = await parseBody(req);
+      if (dbStore) {
+        const created = await dbStore.createReseller(body);
+        return sendJson(res, 201, created);
+      }
       const newReseller = {
         id: store.resellers.length + 1,
         name: body.name,
@@ -3235,9 +3513,13 @@ const server = http.createServer(async (req, res) => {
       if (actor.role !== 'SUPER_ADMIN') {
         return sendJson(res, 403, { message: 'شحن الرصيد متاح للمدير العام فقط' });
       }
+      const body = await parseBody(req);
+      if (dbStore) {
+        const updated = await dbStore.topupReseller(Number(topupMatch[1]), body);
+        return sendJson(res, 200, updated);
+      }
       const reseller = store.resellers.find((r) => r.id === Number(topupMatch[1]));
       if (!reseller) return sendJson(res, 404, { message: 'الموزع غير موجود' });
-      const body = await parseBody(req);
       const amount = Number(body.amount || 0);
       const before = reseller.balance;
       reseller.balance = Number((before + amount).toFixed(2));
@@ -3256,6 +3538,74 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, reseller);
     }
 
+    // NAS Routers CRUD
+    if (pathname === '/api/radius/nas' && req.method === 'POST') {
+      if (actor.role !== 'SUPER_ADMIN') {
+        return sendJson(res, 403, { message: 'إدارة الراوترات متاحة للمدير العام فقط' });
+      }
+      const body = await parseBody(req);
+      if (dbStore) {
+        const created = await dbStore.addNas(body);
+        return sendJson(res, 201, created);
+      }
+      const item = {
+        id: Date.now(),
+        nasname: body.nasname,
+        shortname: body.shortname || body.nasname,
+        secret: body.secret,
+        description: body.description || 'MikroTik Hotspot Router',
+      };
+      store.nas.push(item);
+      return sendJson(res, 201, item);
+    }
+
+    const delNasMatch = pathname.match(/^\/api\/radius\/nas\/(\d+)$/);
+    if (delNasMatch && req.method === 'DELETE') {
+      if (actor.role !== 'SUPER_ADMIN') {
+        return sendJson(res, 403, { message: 'حذف الراوترات متاح للمدير العام فقط' });
+      }
+      const id = Number(delNasMatch[1]);
+      if (dbStore) {
+        return sendJson(res, 200, await dbStore.deleteNas(id));
+      }
+      store.nas = store.nas.filter((n) => n.id !== id);
+      return sendJson(res, 200, { success: true });
+    }
+
+    // Access Points / Modems CRUD
+    if (pathname === '/api/radius/access-points' && req.method === 'POST') {
+      if (actor.role !== 'SUPER_ADMIN') {
+        return sendJson(res, 403, { message: 'إدارة المودمات متاحة للمدير العام فقط' });
+      }
+      const body = await parseBody(req);
+      if (dbStore) {
+        const created = await dbStore.addAccessPoint(body);
+        return sendJson(res, 201, created);
+      }
+      if (!store.accessPoints) store.accessPoints = [];
+      const item = {
+        id: Date.now(),
+        match_value: body.match_value,
+        ap_ip: body.ap_ip,
+        ap_name: body.ap_name || body.match_value,
+      };
+      store.accessPoints.push(item);
+      return sendJson(res, 201, item);
+    }
+
+    const delApMatch = pathname.match(/^\/api\/radius\/access-points\/(\d+)$/);
+    if (delApMatch && req.method === 'DELETE') {
+      if (actor.role !== 'SUPER_ADMIN') {
+        return sendJson(res, 403, { message: 'حذف المودمات متاح للمدير العام فقط' });
+      }
+      const id = Number(delApMatch[1]);
+      if (dbStore) {
+        return sendJson(res, 200, await dbStore.deleteAccessPoint(id));
+      }
+      store.accessPoints = (store.accessPoints || []).filter((a) => a.id !== id);
+      return sendJson(res, 200, { success: true });
+    }
+
     if (pathname === '/api/radius/inspector' && req.method === 'GET') {
       if (dbStore) {
         const data = await dbStore.getRadiusInspector();
@@ -3263,6 +3613,7 @@ const server = http.createServer(async (req, res) => {
       }
       return sendJson(res, 200, {
         nas: store.nas,
+        accessPoints: store.accessPoints || [],
         radcheckSample: store.radcheck.slice(-25).reverse(),
         radusergroupSample: store.radusergroup.slice(-25).reverse(),
         radgroupreply: store.radgroupreply,
