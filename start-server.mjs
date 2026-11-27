@@ -1032,6 +1032,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       --border: #e2e8f0;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      max-width: 100%;
+      overflow-x: hidden;
+      overflow-x: clip;
+    }
     body {
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       background: var(--bg);
@@ -1040,6 +1045,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       min-height: 100vh;
       direction: rtl;
     }
+    body.no-scroll { overflow: hidden; }
     /* Sidebar */
     .sidebar {
       width: 275px;
@@ -1048,8 +1054,23 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       display: flex;
       flex-direction: column;
       flex-shrink: 0;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
       box-shadow: -4px 0 15px rgba(0,0,0,0.08);
     }
+    .sidebar-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.55);
+      backdrop-filter: blur(2px);
+      z-index: 1190;
+    }
+    .sidebar-backdrop.open { display: block; }
+    .sidebar-close-btn { display: none; }
+    .menu-toggle-btn { display: none; }
     .brand {
       padding: 20px;
       border-bottom: 1px solid #1e293b;
@@ -1066,6 +1087,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       align-items: center;
       justify-content: center;
       font-size: 20px;
+      flex-shrink: 0;
       box-shadow: 0 4px 12px rgba(79,70,229,0.4);
     }
     .brand h1 { font-size: 18px; font-weight: 800; color: #fff; }
@@ -1142,7 +1164,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       justify-content: space-between;
       font-size: 12px;
     }
-    .main-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .main-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; width: 100%; }
     .topbar {
       background: #fff;
       border-bottom: 1px solid var(--border);
@@ -1152,6 +1174,19 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       justify-content: space-between;
       flex-wrap: wrap;
       gap: 12px;
+    }
+    .topbar-start {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      min-width: 0;
+      flex: 1;
+    }
+    .topbar-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
     }
     .topbar h2 { font-size: 19px; font-weight: 800; color: #1e293b; }
     .topbar p { font-size: 12px; color: var(--muted); margin-top: 2px; }
@@ -1164,7 +1199,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       font-size: 12px;
       font-weight: 700;
     }
-    .content { padding: 22px 26px; flex: 1; overflow-y: auto; }
+    .content { padding: 22px 26px; flex: 1; overflow-y: auto; min-width: 0; }
     /* 5 Flexible Clickable KPI Cards */
     .kpi-grid-5 {
       display: grid;
@@ -1212,6 +1247,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
     .grid-3 { display: grid; grid-template-columns: 2fr 1fr; gap: 18px; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .grid-2-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .grid-2 > *, .grid-3 > *, .grid-2-form > *, .card { min-width: 0; }
     @media (max-width: 1100px) {
       .grid-3, .grid-2 { grid-template-columns: 1fr; }
     }
@@ -1236,15 +1273,56 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       flex-wrap: wrap;
       gap: 8px;
     }
+    .toolbar-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .search-input {
+      padding: 8px 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 9px;
+      font-size: 12.5px;
+      width: 230px;
+      max-width: 100%;
+      font-family: inherit;
+    }
+    .filter-select {
+      padding: 8px 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 9px;
+      font-size: 12.5px;
+      max-width: 100%;
+      font-family: inherit;
+      background: #fff;
+    }
     /* Charts with Numbers on Top */
+    .chart-scroll {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      padding-bottom: 4px;
+    }
     .chart-bars {
       display: grid;
       grid-template-columns: repeat(8, 1fr);
       gap: 10px;
+      min-width: 480px;
       height: 215px;
       align-items: end;
       padding: 24px 6px 8px;
       border-bottom: 1px solid var(--border);
+    }
+    .chart-legend {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+      font-size: 12px;
+      color: #475569;
     }
     .bar-col {
       display: flex;
@@ -1278,7 +1356,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .bar-peak { width: 22px; background: #10b981; border-radius: 5px 5px 0 0; min-height: 4px; }
     .bar-gb { width: 18px; background: #6366f1; border-radius: 5px 5px 0 0; min-height: 4px; }
     /* Forms & Buttons */
-    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 12px; }
     .field { margin-bottom: 11px; }
     .field label { display: block; font-size: 12px; font-weight: 700; color: #334155; margin-bottom: 4px; }
     .field input, .field select {
@@ -1333,7 +1411,55 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       border-color: var(--primary);
     }
     /* Tables */
-    .table-wrap { overflow-x: auto; }
+    .table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .print-preview-bar {
+      background: #1e1b4b;
+      color: #fff;
+      padding: 12px 16px;
+      border-radius: 12px;
+      margin-bottom: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .tx-row {
+      padding: 10px 12px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .profile-head-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .profile-attrs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .profile-attrs .tag {
+      max-width: 100%;
+      word-break: break-all;
+      white-space: normal;
+    }
+    .reseller-topup-box {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
     table { width: 100%; border-collapse: collapse; text-align: right; font-size: 12.5px; }
     th {
       background: #f8fafc;
@@ -1378,16 +1504,16 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .reset-wrap { position: relative; display: inline-block; }
     .reset-menu {
       display: none;
-      position: absolute;
+      position: fixed;
+      top: 0;
       left: 0;
-      top: 100%;
-      margin-top: 4px;
       background: #fff;
       border: 1px solid #cbd5e1;
       border-radius: 10px;
       box-shadow: 0 10px 25px rgba(0,0,0,0.15);
-      z-index: 100;
+      z-index: 10050;
       min-width: 210px;
+      max-width: calc(100vw - 24px);
       padding: 5px;
     }
     .reset-menu.open { display: block; }
@@ -1425,6 +1551,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       width: 100%;
       max-width: 680px;
       max-height: 92vh;
+      max-height: 94dvh;
       display: flex;
       flex-direction: column;
       box-shadow: 0 25px 50px rgba(0,0,0,0.35);
@@ -1497,6 +1624,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       font-weight: 600;
       color: #0f172a;
       font-size: 13px;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
     .um-input {
       width: 100%;
@@ -1579,24 +1708,135 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       border-top: 1px solid #f1f5f9;
       padding-top: 2px;
     }
+    /* Responsive Breakpoints (Tablets, Phones & Small Screens) */
+    @media (max-width: 1024px) {
+      .sidebar {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        height: 100vh;
+        height: 100dvh;
+        width: min(290px, 84vw);
+        z-index: 1200;
+        transform: translateX(100%);
+        transition: transform 0.25s ease;
+        box-shadow: -8px 0 28px rgba(0,0,0,0.28);
+      }
+      .sidebar.open { transform: translateX(0); }
+      .menu-toggle-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        flex-shrink: 0;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #f8fafc;
+        color: #0f172a;
+        font-size: 20px;
+        cursor: pointer;
+      }
+      .sidebar-close-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        margin-right: auto;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        background: #1e293b;
+        color: #f8fafc;
+        font-size: 16px;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .topbar { padding: 12px 16px; }
+      .content { padding: 16px; }
+      #toast-box { margin: 10px 16px 0; }
+    }
+    @media screen and (max-width: 900px) {
+      .voucher-grid-40, .voucher-grid-30 { grid-template-columns: repeat(2, 1fr); }
+      .v-card { height: auto; min-height: 27mm; }
+    }
+    @media (max-width: 640px) {
+      .topbar { padding: 10px 12px; gap: 10px; }
+      .topbar h2 { font-size: 15.5px; line-height: 1.35; }
+      .topbar p { font-size: 11px; }
+      .topbar-actions { width: 100%; justify-content: space-between; gap: 8px; }
+      .status-pill {
+        flex: 1 1 auto;
+        text-align: center;
+        font-size: 11px;
+        padding: 6px 10px;
+        white-space: normal;
+        word-break: break-word;
+      }
+      .content { padding: 12px; }
+      #toast-box { margin: 10px 12px 0; font-size: 12px; padding: 10px 12px; }
+      .card { padding: 14px; border-radius: 14px; margin-bottom: 14px; }
+      .card-title { font-size: 14px; gap: 8px; }
+      .kpi-grid-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+      .kpi-card { padding: 12px; border-radius: 14px; gap: 8px; }
+      .kpi-card > div:first-child { min-width: 0; }
+      .kpi-label { font-size: 11px; }
+      .kpi-val { font-size: 20px !important; word-break: break-word; }
+      .kpi-sub { font-size: 10.5px; }
+      .kpi-icon { width: 38px; height: 38px; border-radius: 11px; font-size: 18px; }
+      .toolbar-controls { width: 100%; }
+      .search-input, .filter-select { width: 100%; flex: 1 1 100%; font-size: 16px; }
+      .field input, .field select, .um-input, .rbac-box select { font-size: 16px; }
+      #simulate-btn { width: 100%; }
+      .pill-btn { padding: 5px 10px; font-size: 11.5px; }
+      th, td { padding: 8px 9px; font-size: 12px; }
+      .action-group { min-width: 215px; }
+      .grid-2-form { grid-template-columns: 1fr; }
+      .reseller-topup-box { width: 100%; }
+      .reseller-topup-box input { flex: 1 1 100px; width: auto !important; font-size: 16px; }
+      .modal-backdrop { padding: 8px; }
+      .um-header { padding: 9px 12px; font-size: 14px; }
+      .um-body { padding: 10px 12px; font-size: 12.5px; }
+      .um-sec-content { padding: 6px 4px 4px; }
+      .um-row { grid-template-columns: 1fr; gap: 3px; margin-bottom: 10px; }
+      .um-label { text-align: right; font-size: 11.5px; color: #475569; }
+      .um-footer { padding: 8px 10px; gap: 8px; }
+      .um-footer > div { width: 100%; }
+      .um-footer .btn { flex: 1 1 auto; }
+      #mikrotik-script-box { font-size: 11px !important; padding: 10px !important; }
+    }
+    @media screen and (max-width: 480px) {
+      .voucher-grid-40, .voucher-grid-30 { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 390px) {
+      .kpi-grid-5 { grid-template-columns: 1fr; }
+    }
     @media print {
       @page { size: A4 portrait; margin: 5mm; }
-      .sidebar, .topbar, .no-print, #toast-box, .modal-backdrop { display: none !important; }
-      body { background: #fff; }
-      .content { padding: 0 !important; }
+      .sidebar, .sidebar-backdrop, .menu-toggle-btn, .sidebar-close-btn, .topbar, .no-print, #toast-box, .modal-backdrop { display: none !important; }
+      body { background: #fff; display: block !important; overflow: visible !important; }
+      .content { padding: 0 !important; overflow: visible !important; }
       .a4-sheet { border: none; margin: 0; padding: 0; page-break-after: always; break-after: page; }
+      .voucher-grid-40 { grid-template-columns: repeat(4, 1fr) !important; }
+      .voucher-grid-30 { grid-template-columns: repeat(3, 1fr) !important; }
+      .v-card { height: 26.8mm !important; min-height: 26.8mm !important; }
     }
   </style>
 </head>
 <body>
+  <!-- Mobile/Tablet Sidebar Backdrop -->
+  <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeSidebar()"></div>
+
   <!-- Sidebar -->
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
     <div class="brand">
       <div class="brand-icon">📡</div>
       <div>
         <h1>RadiusPro ISP</h1>
         <p>MikroTik & FreeRADIUS 3.x</p>
       </div>
+      <button type="button" class="sidebar-close-btn" onclick="closeSidebar()" aria-label="إغلاق القائمة">✕</button>
     </div>
 
     <nav class="nav">
@@ -1638,11 +1878,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <!-- Main Content -->
   <div class="main-wrap">
     <header class="topbar">
-      <div>
-        <h2 id="page-title">لوحة القيادة ومؤشرات الأداء اللحظية</h2>
-        <p id="page-subtitle">متصل بمحرك FreeRADIUS 3.x وجداول radcheck / radacct / radgroupreply</p>
+      <div class="topbar-start">
+        <button type="button" class="menu-toggle-btn" id="menu-toggle-btn" onclick="toggleSidebar()" aria-label="فتح القائمة" aria-expanded="false">☰</button>
+        <div style="min-width:0;">
+          <h2 id="page-title">لوحة القيادة ومؤشرات الأداء اللحظية</h2>
+          <p id="page-subtitle">متصل بمحرك FreeRADIUS 3.x وجداول radcheck / radacct / radgroupreply</p>
+        </div>
       </div>
-      <div style="display:flex; gap:10px; align-items:center;">
+      <div class="topbar-actions">
         <span class="status-pill" id="system-status-pill">⏳ جاري فحص الاتصال بالسيرفر...</span>
         <button class="btn btn-light" onclick="refreshAll()">🔄 تحديث البيانات</button>
       </div>
@@ -1664,8 +1907,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               <span>📈 حركة الترافيك الحية على راوترات MikroTik (بالأرقام Mbps)</span>
               <span class="tag tag-indigo">تحديث مباشر من radacct</span>
             </div>
-            <div class="chart-bars" id="traffic-chart"></div>
-            <div style="display:flex; justify-content:space-between; margin-top:12px; font-size:12px; color:#475569;">
+            <div class="chart-scroll">
+              <div class="chart-bars" id="traffic-chart"></div>
+            </div>
+            <div class="chart-legend">
               <div>
                 <span style="margin-left:16px;">🟦 التحميل (Download Mbps)</span>
                 <span>🟧 الرفع (Upload Mbps)</span>
@@ -1679,8 +1924,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               <span>🔥 أوقات الذروة: عدد المتصلين والاستهلاك العام (GB)</span>
               <span class="tag tag-emerald">تحليل ساعات الذروة</span>
             </div>
-            <div class="chart-bars" id="peak-chart"></div>
-            <div style="display:flex; justify-content:space-between; margin-top:12px; font-size:12px; color:#475569;">
+            <div class="chart-scroll">
+              <div class="chart-bars" id="peak-chart"></div>
+            </div>
+            <div class="chart-legend">
               <div>
                 <span style="margin-left:16px;">🟩 عدد المتصلين (مشترك)</span>
                 <span>🟪 الاستهلاك الكلي (GB)</span>
@@ -1695,7 +1942,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             <span>🎟️ أحدث دفعات الكروت المولّدة</span>
             <button class="btn btn-primary btn-xs" onclick="switchTab('vouchers')">+ توليد دفعة جديدة</button>
           </div>
-          <div id="recent-batches-list" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px;"></div>
+          <div id="recent-batches-list" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap:12px;"></div>
         </div>
       </section>
 
@@ -1711,15 +1958,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 اضغط على رقم الكرت لفتح نافذة <b>تفاصيل المستخدم (User Details)</b> وتعديل بياناته أو عرض جلساته.
               </p>
             </div>
-            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <div class="toolbar-controls">
               <input
                 type="text"
                 id="cards-search"
+                class="search-input"
                 placeholder="🔍 بحث برقم الكرت أو MAC أو IP..."
                 oninput="loadCardsDirectory()"
-                style="padding:7px 12px; border:1px solid #cbd5e1; border-radius:9px; font-size:12.5px; width:220px;"
               />
-              <select id="cards-profile-filter" onchange="loadCardsDirectory()" style="padding:7px 10px; border:1px solid #cbd5e1; border-radius:9px; font-size:12.5px;">
+              <select id="cards-profile-filter" class="filter-select" onchange="loadCardsDirectory()">
                 <option value="ALL">جميع الباقات</option>
               </select>
             </div>
@@ -1771,13 +2018,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 اضغط على رقم الكرت لعرض وتعديل تفاصيله الكاملة، أو استخدم أزرار الإجراءات الخمسة (فصل، تعطيل، تمكين، تصفير، حذف).
               </p>
             </div>
-            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <div class="toolbar-controls">
               <input
                 type="text"
                 id="session-search"
+                class="search-input"
                 placeholder="🔍 بحث بالكرت أو IP أو المودم أو MAC..."
                 oninput="loadSessions()"
-                style="padding:8px 12px; border:1px solid #cbd5e1; border-radius:10px; font-size:13px; width:240px;"
               />
               <button class="btn btn-primary" id="simulate-btn" onclick="simulateNewSession()">▶️ محاكاة دخول مشترك جديد</button>
             </div>
@@ -1923,7 +2170,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 <label>اسم الباقة بالعربية (للكروت)</label>
                 <input type="text" id="prof-display" placeholder="باقة 6 ميجا - شهرية" required />
               </div>
-              <div class="grid-2">
+              <div class="grid-2-form">
                 <div class="field">
                   <label>سعر البيع</label>
                   <input type="number" step="0.5" id="prof-price" value="1500" required />
@@ -1938,7 +2185,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 <input type="text" id="prof-speed" dir="ltr" value="" placeholder="مثال: 6M/6M" />
                 <div style="font-size:11px; color:#64748b; margin-top:4px;">اختياري — اتركه فارغاً للتحكم بالسرعة من Queues في المايكروتك</div>
               </div>
-              <div class="grid-2">
+              <div class="grid-2-form">
                 <div class="field">
                   <label>وقت الاستخدام الفعلي (ساعات)</label>
                   <input type="number" id="prof-hours" value="72" min="0" step="any" />
@@ -1984,7 +2231,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 <label>رقم الجوال</label>
                 <input type="text" id="res-phone" placeholder="0500000000" />
               </div>
-              <div class="grid-2">
+              <div class="grid-2-form">
                 <div class="field">
                   <label>الرصيد الافتتاحي</label>
                   <input type="number" id="res-balance" value="500" />
@@ -2236,20 +2483,77 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       setTimeout(() => { box.style.display = 'none'; }, 5000);
     }
 
+    function closeOpenResetMenus() {
+      document.querySelectorAll('.reset-menu.open').forEach((el) => el.classList.remove('open'));
+    }
+
+    function openSidebar() {
+      const sb = document.getElementById('sidebar');
+      const bd = document.getElementById('sidebar-backdrop');
+      const btn = document.getElementById('menu-toggle-btn');
+      if (sb) sb.classList.add('open');
+      if (bd) bd.classList.add('open');
+      if (btn) btn.setAttribute('aria-expanded', 'true');
+      document.body.classList.add('no-scroll');
+    }
+
+    function closeSidebar() {
+      const sb = document.getElementById('sidebar');
+      const bd = document.getElementById('sidebar-backdrop');
+      const btn = document.getElementById('menu-toggle-btn');
+      if (sb) sb.classList.remove('open');
+      if (bd) bd.classList.remove('open');
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+      document.body.classList.remove('no-scroll');
+    }
+
+    function toggleSidebar() {
+      const sb = document.getElementById('sidebar');
+      if (sb && sb.classList.contains('open')) closeSidebar();
+      else openSidebar();
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeSidebar();
+        closeOpenResetMenus();
+        const modal = document.getElementById('user-details-modal');
+        if (modal && modal.classList.contains('open')) closeUserModal();
+      }
+    });
+
+    window.addEventListener('scroll', closeOpenResetMenus, true);
+    window.addEventListener('resize', () => {
+      closeOpenResetMenus();
+      if (window.innerWidth > 1024) closeSidebar();
+    });
+
     // Close open reset menus when clicking outside
     document.addEventListener('click', (e) => {
       if (!e.target.closest('.reset-wrap')) {
-        document.querySelectorAll('.reset-menu.open').forEach((el) => el.classList.remove('open'));
+        closeOpenResetMenus();
       }
     });
 
     function toggleResetMenu(menuId, ev) {
       ev.stopPropagation();
-      document.querySelectorAll('.reset-menu.open').forEach((el) => {
-        if (el.id !== menuId) el.classList.remove('open');
-      });
       const menu = document.getElementById(menuId);
-      if (menu) menu.classList.toggle('open');
+      if (!menu) return;
+      const wasOpen = menu.classList.contains('open');
+      closeOpenResetMenus();
+      if (wasOpen) return;
+
+      const trigger = ev.currentTarget || ev.target;
+      const rect = trigger.getBoundingClientRect();
+      menu.classList.add('open');
+      const menuRect = menu.getBoundingClientRect();
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuRect.width - 8));
+      let top = rect.bottom + 4;
+      if (top + menuRect.height > window.innerHeight - 8) {
+        top = Math.max(8, rect.top - menuRect.height - 4);
+      }
+      menu.style.left = left + 'px';
+      menu.style.top = top + 'px';
     }
 
     async function api(path, options = {}) {
@@ -2266,8 +2570,22 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       return data;
     }
 
+    const TAB_TITLES = {
+      dashboard: 'لوحة القيادة ومؤشرات الأداء اللحظية',
+      cards: 'إدارة الكروت والمستخدمين',
+      sessions: 'المتصلون الآن ومراقبة الجلسات (Live CoA)',
+      vouchers: 'توليد وطباعة الكروت (A4)',
+      profiles: 'الباقات والسرعات (Profiles)',
+      resellers: 'الموزعون والأرصدة والعمليات المالية (RBAC)',
+      radius_db: 'فاحص جداول FreeRADIUS وربط MikroTik'
+    };
+
     function switchTab(tab, statusFilter = null) {
       currentTab = tab;
+      closeSidebar();
+      closeOpenResetMenus();
+      const titleEl = document.getElementById('page-title');
+      if (titleEl && TAB_TITLES[tab]) titleEl.textContent = TAB_TITLES[tab];
       ['dashboard', 'cards', 'sessions', 'vouchers', 'profiles', 'resellers', 'radius_db'].forEach((t) => {
         const sec = document.getElementById('tab-' + t);
         if (sec) sec.style.display = t === tab ? 'block' : 'none';
@@ -2615,8 +2933,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           <div class="um-sec-content" id="um-sec-const">
             <div class="um-row">
               <div class="um-label">:قفل الماك (Caller-ID)</div>
-              <div style="display:flex; gap:6px;">
-                <input type="text" id="um-edit-mac" class="um-input" dir="ltr" value="\${c.bound_mac || ''}" placeholder="فارغ = يسمح لأي جهاز" />
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <input type="text" id="um-edit-mac" class="um-input" dir="ltr" style="flex:1 1 180px;" value="\${c.bound_mac || ''}" placeholder="فارغ = يسمح لأي جهاز" />
                 <button type="button" class="btn btn-light btn-xs" onclick="document.getElementById('um-edit-mac').value=''">فك القفل</button>
               </div>
             </div>
@@ -2697,13 +3015,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         <div class="um-section">
           <div class="um-sec-title" onclick="toggleSec('um-sec-allprof')">▲ اجمالي الملفات</div>
           <div class="um-sec-content" id="um-sec-allprof">
-            <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px;">
               <span><b>\${c.profile_name}</b> :مفعل</span>
               <span class="tag tag-emerald">الباقة الفعالة</span>
             </div>
-            <div style="display:flex; align-items:center; gap:8px;">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
               <span style="font-size:12px; font-weight:700;">تغيير أو ترقية الباقة (+):</span>
-              <select id="um-edit-profile" class="um-input" style="max-width:260px;">
+              <select id="um-edit-profile" class="um-input" style="max-width:100%; flex:1 1 220px;">
                 \${profiles.map((p) => \`
                   <option value="\${p.id}" \${p.id === c.profile_id ? 'selected' : ''}>
                     \${p.name} (\${Number(p.price).toFixed(2)}) - \${p.display_name}
@@ -2820,7 +3138,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
 
       container.innerHTML = \`
-        <div class="no-print" style="background:#1e1b4b; color:#fff; padding:12px 18px; border-radius:12px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+        <div class="no-print print-preview-bar">
           <strong>🖨️ معاينة طباعة الدفعة: \${batch.batch_code} (\${cards.length} كرت - \${batch.profile_display_name})</strong>
           <button class="btn btn-emerald" onclick="window.print()">اطبع الورقة الآن (A4)</button>
         </div>
@@ -3233,7 +3551,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         document.getElementById('recent-batches-list').innerHTML = kpis.recentBatches.length === 0
           ? '<div style="padding:18px; text-align:center; color:#64748b; font-size:12px;">لا توجد دفعات مولّدة بعد — اضغط "توليد دفعة جديدة"</div>'
           : kpis.recentBatches.map((b) => \`
-          <div style="padding:12px 14px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; display:flex; justify-content:space-between; align-items:center;">
+          <div style="padding:12px 14px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
             <div>
               <div class="mono" style="font-weight:800; color:#4338ca; font-size:12px;">\${b.batch_code}</div>
               <div style="font-weight:700; font-size:13px; margin-top:2px;">\${b.profile_display_name || '-'} (\${b.quantity} كرت)</div>
@@ -3291,7 +3609,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           ? '<div class="card" style="text-align:center; padding:30px; color:#64748b;">لا توجد باقات حالياً في قاعدة البيانات. قم بإضافة أول باقة من النموذج الجانبي للبدء ببيع الكروت.</div>'
           : profiles.map((p) => \`
           <div class="card">
-            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:12px;">
+            <div class="profile-head-row">
               <div>
                 <span style="font-size:17px; font-weight:800;">\${p.display_name}</span>
                 <span class="tag tag-indigo mono" style="margin-right:8px;">\${p.name}</span>
@@ -3305,7 +3623,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 <button class="btn btn-danger btn-xs" onclick="deleteProfile(\${p.id})">🗑️ حذف</button>
               </div>
             </div>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:12px;">
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap:8px; margin-bottom:12px;">
               <div style="background:#eef2ff; border:1px solid #c7d2fe; border-radius:10px; padding:8px 11px;">
                 <div style="font-size:11px; color:#4338ca; font-weight:700;">📦 الكوتا الإجمالية</div>
                 <div class="mono" dir="ltr" style="font-size:13px; font-weight:800; color:#1e1b4b; margin-top:2px;">\${formatQuotaMb(p.data_limit_mb)}</div>
@@ -3323,7 +3641,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               <div style="font-size:11px; font-weight:700; color:#64748b; margin-bottom:8px;">
                 الخصائص المتزامنة في جدولَي radgroupreply و radgroupcheck:
               </div>
-              <div style="display:flex; flex-wrap:wrap; gap:8px;" dir="ltr">
+              <div class="profile-attrs" dir="ltr">
                 \${(p.radgroupreply || []).map((r) => \`<span class="tag tag-indigo mono"><b>\${r.attribute}</b> \${r.op} \${r.value}</span>\`).join('')}
                 \${(p.radgroupcheck || []).map((c) => \`<span class="tag tag-amber mono"><b>\${c.attribute}</b> \${c.op} \${c.value}</span>\`).join('')}
               </div>
@@ -3349,7 +3667,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               </div>
             </div>
             \${sys.currentActor.role === 'SUPER_ADMIN' ? \`
-              <div style="display:flex; gap:6px; align-items:center;">
+              <div class="reseller-topup-box">
                 <input type="number" id="topup-\${r.id}" value="200" style="width:90px; padding:6px 8px; border:1px solid #cbd5e1; border-radius:8px;" />
                 <button class="btn btn-emerald btn-xs" onclick="topupReseller(\${r.id})">💳 شحن رصيد</button>
               </div>
@@ -3360,7 +3678,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         document.getElementById('transactions-list').innerHTML = (resData.transactions || []).length === 0
           ? '<div style="padding:18px; text-align:center; color:#64748b; font-size:12px;">لا توجد حركات مالية مسجلة حتى الآن</div>'
           : resData.transactions.map((t) => \`
-          <div style="padding:10px 12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; display:flex; justify-content:space-between; font-size:12px;">
+          <div class="tx-row">
             <div>
               <span class="tag \${t.type === 'DEPOSIT' ? 'tag-emerald' : 'tag-amber'}">\${t.type === 'DEPOSIT' ? 'إيداع' : 'خصم دفعة'}</span>
               <b style="margin-right:6px;">\${t.description}</b>

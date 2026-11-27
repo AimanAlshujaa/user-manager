@@ -103,7 +103,7 @@ export const BatchVoucherGenerator: React.FC<Props> = ({
   }
 
   return (
-    <div dir="rtl" className="min-h-screen bg-slate-50 text-slate-900 p-6 font-sans">
+    <div dir="rtl" className="min-h-screen bg-slate-50 text-slate-900 p-3 sm:p-6 font-sans overflow-x-hidden">
       {/* Print-specific CSS rules to render exact A4 40-card sheets cleanly */}
       <style>{`
         @media print {
@@ -132,14 +132,14 @@ export const BatchVoucherGenerator: React.FC<Props> = ({
       `}</style>
 
       {/* Non-Print Control Panel */}
-      <div className="print:hidden max-w-7xl mx-auto space-y-6">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+      <div className="print:hidden max-w-7xl mx-auto space-y-5 sm:space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-              <Sparkles className="w-6 h-6 text-indigo-600" />
+            <h1 className="text-lg sm:text-2xl font-bold text-slate-800 flex flex-wrap items-center gap-2">
+              <Sparkles className="w-6 h-6 text-indigo-600 shrink-0" />
               مولّد كروت الهوت سبوت والطباعة الفورية (Batch Voucher Generator)
             </h1>
-            <p className="text-sm text-slate-500 mt-1">
+            <p className="text-xs sm:text-sm text-slate-500 mt-1">
               توليد دفعات الكروت وإضافتها مباشرة إلى قاعدة بيانات FreeRADIUS (`radcheck` & `radusergroup`) مع قالب طباعة A4 قياسي.
             </p>
           </div>
@@ -147,7 +147,7 @@ export const BatchVoucherGenerator: React.FC<Props> = ({
             <button
               type="button"
               onClick={() => window.print()}
-              className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-6 py-3 rounded-xl shadow transition"
+              className="w-full md:w-auto inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-6 py-3 rounded-xl shadow transition shrink-0"
             >
               <Printer className="w-5 h-5" />
               طباعة الدفعة ({cards.length} كرت - A4)
@@ -164,10 +164,10 @@ export const BatchVoucherGenerator: React.FC<Props> = ({
 
         <form
           onSubmit={handleGenerateBatch}
-          className="grid grid-cols-1 lg:grid-cols-3 gap-6"
+          className="grid grid-cols-1 lg:grid-cols-3 gap-5 sm:gap-6"
         >
           {/* Column 1 & 2: Batch Generation Parameters */}
-          <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-5">
+          <div className="lg:col-span-2 bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200 space-y-5 min-w-0">
             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 border-b pb-3">
               <Layers className="w-5 h-5 text-indigo-600" />
               إعدادات الدفعة والباقة (FreeRADIUS Profile)
@@ -292,7 +292,7 @@ export const BatchVoucherGenerator: React.FC<Props> = ({
           </div>
 
           {/* Column 3: Printable Card Branding & QR Options */}
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+          <div className="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4 min-w-0">
             <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 border-b pb-3">
               <QrCode className="w-5 h-5 text-indigo-600" />
               تخصيص تصميم الكرت المطبوع
@@ -374,7 +374,9 @@ export const BatchVoucherGenerator: React.FC<Props> = ({
             >
               <div
                 className={`grid ${
-                  cardsPerPage === 40 ? 'grid-cols-4' : 'grid-cols-3'
+                  cardsPerPage === 40
+                    ? 'grid-cols-1 sm:grid-cols-2 md:grid-cols-4 print:grid-cols-4'
+                    : 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 print:grid-cols-3'
                 } gap-1.5`}
               >
                 {pageCards.map((card, idx) => {
@@ -385,7 +387,7 @@ export const BatchVoucherGenerator: React.FC<Props> = ({
                   return (
                     <div
                       key={card.serialNumber || idx}
-                      className="border border-dashed border-slate-400 rounded-md p-1.5 flex flex-col justify-between bg-white text-[10px] leading-tight h-[26.8mm] overflow-hidden"
+                      className="border border-dashed border-slate-400 rounded-md p-1.5 flex flex-col justify-between bg-white text-[10px] leading-tight min-h-[26.8mm] md:h-[26.8mm] print:h-[26.8mm] overflow-hidden"
                     >
                       {/* Top Header: Brand & Price */}
                       <div className="flex items-center justify-between border-b border-slate-200 pb-0.5">

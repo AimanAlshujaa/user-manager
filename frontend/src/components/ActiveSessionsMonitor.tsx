@@ -128,31 +128,31 @@ export const ActiveSessionsMonitor: React.FC<Props> = ({
   };
 
   return (
-    <div dir="rtl" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 font-sans">
+    <div dir="rtl" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-6 font-sans">
       {/* Header & Search Controls */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-200">
         <div>
-          <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-            <Wifi className="w-6 h-6 text-emerald-600 animate-pulse" />
+          <h2 className="text-lg sm:text-xl font-bold text-slate-800 flex flex-wrap items-center gap-2">
+            <Wifi className="w-6 h-6 text-emerald-600 animate-pulse shrink-0" />
             المتصلون الآن مباشر (Live Active Sessions)
-            <span className="bg-emerald-100 text-emerald-800 text-sm font-bold px-3 py-0.5 rounded-full">
+            <span className="bg-emerald-100 text-emerald-800 text-xs sm:text-sm font-bold px-3 py-0.5 rounded-full">
               {sessions.length} متصل
             </span>
           </h2>
-          <p className="text-sm text-slate-500 mt-1">
+          <p className="text-xs sm:text-sm text-slate-500 mt-1">
             مراقبة حية من جدول `radacct` مع إمكانية قطع الاتصال الفوري عبر حزم CoA/PoD (UDP 3799).
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="relative">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
+          <div className="relative w-full sm:w-auto">
             <Search className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
             <input
               type="text"
               placeholder="بحث بالكود أو IP أو MAC..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pr-9 pl-4 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none w-64"
+              className="pr-9 pl-4 py-2 rounded-xl border border-slate-300 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none w-full sm:w-64"
             />
           </div>
 
@@ -160,7 +160,7 @@ export const ActiveSessionsMonitor: React.FC<Props> = ({
             type="button"
             onClick={fetchActiveSessions}
             disabled={loading}
-            className="inline-flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium px-4 py-2 rounded-xl transition"
+            className="inline-flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium px-4 py-2 rounded-xl transition shrink-0"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             تحديث
@@ -188,7 +188,7 @@ export const ActiveSessionsMonitor: React.FC<Props> = ({
 
       {/* Sessions Table */}
       <div className="mt-6 overflow-x-auto">
-        <table className="w-full text-right border-collapse">
+        <table className="w-full text-right border-collapse whitespace-nowrap">
           <thead>
             <tr className="bg-slate-50 text-slate-600 text-xs uppercase border-b border-slate-200">
               <th className="py-3.5 px-4 font-bold">المستخدم / الكرت</th>
