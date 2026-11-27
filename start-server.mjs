@@ -351,9 +351,10 @@ class RadiusEngine {
     }
   }
 
-  createProfile(dto) {
-    const id = this.profiles_meta.length + 1;
+  _normalizeProfileDto(dto) {
     const name = String(dto.name || '').trim();
+    if (!name) throw new Error('الاسم البرمجي للباقة مطلوب');
+
     const displayName = String(dto.displayName ?? dto.display_name ?? '').trim() || name;
     const speedLimit = String(dto.speedLimit ?? dto.speed_limit ?? '').trim();
 
@@ -369,35 +370,114 @@ class RadiusEngine {
     const simultaneousUse = Number(dto.simultaneousUse ?? dto.simultaneous_use ?? 1) || 1;
     const portLimit = Number(dto.portLimit ?? dto.port_limit ?? 1) || 1;
 
-    const row = {
-      id,
+    return {
       name,
-      display_name: displayName,
+      displayName,
       price: Number(dto.price || 0),
-      cost_price: Number(dto.costPrice ?? dto.cost_price ?? 0),
-      speed_limit: speedLimit,
-      time_limit: timeLimit,
-      data_limit_mb: dataLimitMb,
-      validity_days: validityDays,
-      simultaneous_use: simultaneousUse,
-      port_limit: portLimit,
-      is_active: 1,
-    };
-    this.profiles_meta.push(row);
-    this.syncGroupRadiusTables({
-      name,
+      costPrice: Number(dto.costPrice ?? dto.cost_price ?? 0),
       speedLimit,
       timeLimit,
       dataLimitMb,
+      validityDays,
       simultaneousUse,
       portLimit,
-    });
+    };
+  }
+
+  createProfile(dto) {
+    const id = this.profiles_meta.reduce((m, p) => Math.max(m, p.id), 0) + 1;
+    const p = this._normalizeProfileDto(dto);
+    if (this.profiles_meta.some((x) => x.name === p.name)) {
+      throw new Error('الاسم البرمجي للباقة مستخدم بالفعل');
+    }
+
+    const row = {
+      id,
+      name: p.name,
+      display_name: p.displayName,
+      price: p.price,
+      cost_price: p.costPrice,
+      speed_limit: p.speedLimit,
+      time_limit: p.timeLimit,
+      data_limit_mb: p.dataLimitMb,
+      validity_days: p.validityDays,
+      simultaneous_use: p.simultaneousUse,
+      port_limit: p.portLimit,
+      is_active: 1,
+    };
+    this.profiles_meta.push(row);
+    this.syncGroupRadiusTables(p);
     return row;
   }
 
+  updateProfile(id, dto) {
+    const profileId = Number(id);
+    const existing = this.profiles_meta.find((item) => item.id === profileId);
+    if (!existing) throw new Error('الباقة غير موجودة');
+
+    const p = this._normalizeProfileDto(dto);
+    const oldName = existing.name;
+    if (p.name !== oldName && this.profiles_meta.some((x) => x.name === p.name && x.id !== profileId)) {
+      throw new Error('الاسم البرمجي للباقة مستخدم بالفعل لباقة أخرى');
+    }
+
+    existing.name = p.name;
+    existing.display_name = p.displayName;
+    existing.price = p.price;
+    existing.cost_price = p.costPrice;
+    existing.speed_limit = p.speedLimit;
+    existing.time_limit = p.timeLimit;
+    existing.data_limit_mb = p.dataLimitMb;
+    existing.validity_days = p.validityDays;
+    existing.simultaneous_use = p.simultaneousUse;
+    existing.port_limit = p.portLimit;
+
+    if (p.name !== oldName) {
+      this.radgroupreply = this.radgroupreply.filter((r) => r.groupname !== oldName);
+      this.radgroupcheck = this.radgroupcheck.filter((c) => c.groupname !== oldName);
+      this.radusergroup.forEach((u) => {
+        if (u.groupname === oldName) u.groupname = p.name;
+      });
+    }
+
+    this.voucher_cards.forEach((c) => {
+      if (c.profile_id === profileId) {
+        c.profile_name = p.name;
+        c.profile_display_name = p.displayName;
+        c.price = p.price;
+        c.speed_limit = p.speedLimit;
+        c.time_limit = p.timeLimit;
+        c.data_limit_mb = p.dataLimitMb;
+        c.validity_days = p.validityDays;
+      }
+    });
+    this.voucher_batches.forEach((b) => {
+      if (b.profile_id === profileId) {
+        b.profile_display_name = p.displayName;
+        b.speed_limit = p.speedLimit;
+        b.price = p.price;
+      }
+    });
+
+    this.syncGroupRadiusTables(p);
+    return existing;
+  }
+
   deleteProfile(id) {
-    const idx = this.profiles_meta.findIndex((p) => p.id === id);
+    const profileId = Number(id);
+    const idx = this.profiles_meta.findIndex((p) => p.id === profileId);
     if (idx === -1) throw new Error('الباقة غير موجودة');
+
+    const cardsCount = this.voucher_cards.filter((c) => c.profile_id === profileId).length;
+    if (cardsCount > 0) {
+      throw new Error(`لا يمكن حذف هذه الباقة لوجود ${cardsCount} كرت مرتبط بها. استخدم زر "تعديل" لتحديث الباقة بأمان دون التأثير على الكروت.`);
+    }
+
+    const batchesCount = this.voucher_batches.filter((b) => b.profile_id === profileId).length;
+    if (batchesCount > 0) {
+      throw new Error(`لا يمكن حذف هذه الباقة لوجود ${batchesCount} دفعة مرتبطة بها. يمكنك تعديل الباقة مباشرة بدلاً من حذفها.`);
+    }
+
     const groupname = this.profiles_meta[idx].name;
     this.profiles_meta.splice(idx, 1);
     this.radgroupreply = this.radgroupreply.filter((r) => r.groupname !== groupname);
@@ -1780,6 +1860,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             <div class="field">
               <label>رابط الدخول (لرمز QR التلقائي)</label>
               <input type="text" id="brand-url" dir="ltr" value="http://wifi.lan/login" oninput="renderPrintPreview()" />
+              <div style="font-size:11px; color:#64748b; margin-top:4px;">أدخل رابط صفحة الدخول الفعلية في المايكروتك (DNS Name أو IP البوابة مثل http://10.5.50.1/login)</div>
             </div>
             <div class="field">
               <label>رقم الدعم الفني</label>
@@ -1830,9 +1911,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       <!-- ================================================================= -->
       <section id="tab-profiles" style="display:none;">
         <div class="grid-3">
-          <div class="card">
-            <div class="card-title">➕ إضافة باقة سرعة جديدة (تزامن مع radgroupreply)</div>
+          <div class="card" id="prof-form-card">
+            <div class="card-title" id="prof-form-title">➕ إضافة باقة جديدة (تزامن مع radgroupreply)</div>
             <form onsubmit="handleCreateProfile(event)">
+              <input type="hidden" id="prof-edit-id" value="" />
               <div class="field">
                 <label>الاسم البرمجي في FreeRADIUS (groupname)</label>
                 <input type="text" id="prof-name" dir="ltr" placeholder="1500R" required />
@@ -1873,7 +1955,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 <input type="number" id="prof-validity" value="30" min="0" />
                 <div style="font-size:11px; color:#64748b; margin-top:4px;">الافتراضي 30 يوماً — يقبل 0 لبدون انتهاء صلاحية</div>
               </div>
-              <button type="submit" class="btn btn-primary btn-block">💾 حفظ الباقة ومزامنة FreeRADIUS</button>
+              <button type="submit" id="prof-submit-btn" class="btn btn-primary btn-block">💾 حفظ الباقة ومزامنة FreeRADIUS</button>
+              <button type="button" id="prof-cancel-btn" class="btn btn-light btn-block" style="display:none; margin-top:8px;" onclick="cancelEditProfile()">✖️ إلغاء التعديل</button>
             </form>
           </div>
 
@@ -2080,6 +2163,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     let currentActorId = 1;
     let currentCardsStatusFilter = 'ALL';
     let currentPrintableBatch = null;
+    let currentProfiles = [];
     let activeModalUsername = null;
     let showModalSessions = false;
 
@@ -2723,7 +2807,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         return;
       }
       const brandName = document.getElementById('brand-name').value;
-      const brandUrl = document.getElementById('brand-url').value;
+      const brandUrl = document.getElementById('brand-url').value.trim();
       const brandPhone = document.getElementById('brand-phone').value;
       const perPage = Number(document.getElementById('brand-perpage').value) || 40;
       const showQr = document.getElementById('brand-qr').checked;
@@ -2744,7 +2828,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         <div class="a4-sheet">
           <div class="\${perPage === 40 ? 'voucher-grid-40' : 'voucher-grid-30'}">
             \${pageCards.map((c) => {
-              const qrData = encodeURIComponent(brandUrl + '?username=' + c.username + '&password=' + c.cleartextPassword);
+              const sep = brandUrl.includes('?') ? '&' : '?';
+              const qrData = encodeURIComponent(brandUrl + sep + 'username=' + encodeURIComponent(c.username) + '&password=' + encodeURIComponent(c.cleartextPassword));
               return \`
                 <div class="v-card">
                   <div class="v-head">
@@ -2796,9 +2881,44 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
+    function startEditProfile(id) {
+      const p = currentProfiles.find((item) => Number(item.id) === Number(id));
+      if (!p) return;
+      document.getElementById('prof-edit-id').value = String(p.id);
+      document.getElementById('prof-name').value = p.name || '';
+      document.getElementById('prof-display').value = p.display_name || '';
+      document.getElementById('prof-price').value = Number(p.price || 0);
+      document.getElementById('prof-cost').value = Number(p.cost_price || 0);
+      document.getElementById('prof-speed').value = p.speed_limit || '';
+      document.getElementById('prof-hours').value = p.time_limit ? Number((Number(p.time_limit) / 3600).toFixed(2)) : 0;
+      document.getElementById('prof-quota').value = p.data_limit_mb ? Number(p.data_limit_mb) : 0;
+      document.getElementById('prof-validity').value = p.validity_days ? Number(p.validity_days) : 0;
+      document.getElementById('prof-form-title').textContent = '✏️ تعديل الباقة: ' + (p.display_name || p.name);
+      document.getElementById('prof-submit-btn').textContent = '💾 حفظ التعديلات ومزامنة FreeRADIUS';
+      document.getElementById('prof-cancel-btn').style.display = 'inline-flex';
+      const formCard = document.getElementById('prof-form-card');
+      if (formCard) formCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function cancelEditProfile() {
+      document.getElementById('prof-edit-id').value = '';
+      document.getElementById('prof-name').value = '';
+      document.getElementById('prof-display').value = '';
+      document.getElementById('prof-price').value = '1500';
+      document.getElementById('prof-cost').value = '1200';
+      document.getElementById('prof-speed').value = '';
+      document.getElementById('prof-hours').value = '72';
+      document.getElementById('prof-quota').value = '10240';
+      document.getElementById('prof-validity').value = '30';
+      document.getElementById('prof-form-title').textContent = '➕ إضافة باقة جديدة (تزامن مع radgroupreply)';
+      document.getElementById('prof-submit-btn').textContent = '💾 حفظ الباقة ومزامنة FreeRADIUS';
+      document.getElementById('prof-cancel-btn').style.display = 'none';
+    }
+
     async function handleCreateProfile(e) {
       e.preventDefault();
       try {
+        const editId = document.getElementById('prof-edit-id').value.trim();
         const speedVal = document.getElementById('prof-speed').value.trim();
         const hoursRaw = document.getElementById('prof-hours').value;
         const hours = hoursRaw === '' ? 0 : Number(hoursRaw);
@@ -2819,11 +2939,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           simultaneousUse: 1,
           portLimit: 1
         };
-        await api('/api/profiles', { method: 'POST', body: JSON.stringify(payload) });
-        showToast('success', 'تم حفظ الباقة ومزامنة خصائص الميكروتك في radgroupreply و radgroupcheck');
-        document.getElementById('prof-name').value = '';
-        document.getElementById('prof-display').value = '';
-        document.getElementById('prof-speed').value = '';
+        if (editId) {
+          await api('/api/profiles/' + encodeURIComponent(editId), { method: 'PUT', body: JSON.stringify(payload) });
+          showToast('success', 'تم تعديل الباقة ومزامنة FreeRADIUS بنجاح دون التأثير على الكروت المرتبطة');
+        } else {
+          await api('/api/profiles', { method: 'POST', body: JSON.stringify(payload) });
+          showToast('success', 'تم حفظ الباقة ومزامنة خصائص الميكروتك في radgroupreply و radgroupcheck');
+        }
+        cancelEditProfile();
         refreshAll();
       } catch (err) {
         showToast('error', err.message);
@@ -2831,8 +2954,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     async function deleteProfile(id) {
+      if (!confirm('هل أنت متأكد من حذف هذه الباقة؟ (ملاحظة: لا يمكن حذف باقة مرتبطة بكروت حالية)')) return;
       try {
         await api('/api/profiles/' + id, { method: 'DELETE' });
+        if (String(document.getElementById('prof-edit-id').value) === String(id)) {
+          cancelEditProfile();
+        }
         showToast('success', 'تم حذف الباقة بنجاح');
         refreshAll();
       } catch (err) {
@@ -2972,6 +3099,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           api('/api/resellers'),
           api('/api/radius/inspector')
         ]);
+        currentProfiles = profiles || [];
 
         // 0. Live Engine & FreeRADIUS Status Pill + Simulate Button visibility
         const pill = document.getElementById('system-status-pill');
@@ -3163,15 +3291,19 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           ? '<div class="card" style="text-align:center; padding:30px; color:#64748b;">لا توجد باقات حالياً في قاعدة البيانات. قم بإضافة أول باقة من النموذج الجانبي للبدء ببيع الكروت.</div>'
           : profiles.map((p) => \`
           <div class="card">
-            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:12px;">
               <div>
                 <span style="font-size:17px; font-weight:800;">\${p.display_name}</span>
                 <span class="tag tag-indigo mono" style="margin-right:8px;">\${p.name}</span>
+                \${Number(p.cards_count) > 0 ? \`<span class="tag tag-emerald" style="margin-right:6px;">🎟️ \${p.cards_count} كرت</span>\` : ''}
                 <div style="font-size:12px; color:#64748b; margin-top:4px;">
                   سعر البيع: <b>\${p.price}</b> | تكلفة الموزع: <b>\${p.cost_price}</b> | السرعة: <b class="\${p.speed_limit ? 'mono' : ''}">\${formatSpeedLabel(p.speed_limit)}</b>
                 </div>
               </div>
-              <button class="btn btn-danger btn-xs" onclick="deleteProfile(\${p.id})">🗑️ حذف</button>
+              <div style="display:flex; gap:6px; flex-shrink:0;">
+                <button class="btn btn-amber btn-xs" onclick="startEditProfile(\${p.id})">✏️ تعديل</button>
+                <button class="btn btn-danger btn-xs" onclick="deleteProfile(\${p.id})">🗑️ حذف</button>
+              </div>
             </div>
             <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:12px;">
               <div style="background:#eef2ff; border:1px solid #c7d2fe; border-radius:10px; padding:8px 11px;">
@@ -3534,6 +3666,7 @@ const server = http.createServer(async (req, res) => {
       }
       const enriched = store.profiles_meta.map((p) => ({
         ...p,
+        cards_count: store.voucher_cards.filter((c) => c.profile_id === p.id).length,
         radgroupreply: store.radgroupreply.filter((r) => r.groupname === p.name),
         radgroupcheck: store.radgroupcheck.filter((c) => c.groupname === p.name),
       }));
@@ -3553,16 +3686,29 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 201, created);
     }
 
-    const delProfMatch = pathname.match(/^\/api\/profiles\/(\d+)$/);
-    if (delProfMatch && req.method === 'DELETE') {
+    const profByIdMatch = pathname.match(/^\/api\/profiles\/(\d+)$/);
+    if (profByIdMatch && req.method === 'PUT') {
+      if (actor.role !== 'SUPER_ADMIN') {
+        return sendJson(res, 403, { message: 'تعديل الباقات متاح للمدير العام فقط' });
+      }
+      const body = await parseBody(req);
+      if (dbStore) {
+        const updated = await dbStore.updateProfile(Number(profByIdMatch[1]), body);
+        return sendJson(res, 200, updated);
+      }
+      const updated = store.updateProfile(Number(profByIdMatch[1]), body);
+      return sendJson(res, 200, updated);
+    }
+
+    if (profByIdMatch && req.method === 'DELETE') {
       if (actor.role !== 'SUPER_ADMIN') {
         return sendJson(res, 403, { message: 'حذف الباقات متاح للمدير العام فقط' });
       }
       if (dbStore) {
-        const result = await dbStore.deleteProfile(Number(delProfMatch[1]));
+        const result = await dbStore.deleteProfile(Number(profByIdMatch[1]));
         return sendJson(res, 200, result);
       }
-      store.deleteProfile(Number(delProfMatch[1]));
+      store.deleteProfile(Number(profByIdMatch[1]));
       return sendJson(res, 200, { success: true });
     }
 

@@ -25,6 +25,7 @@ import {
   QrCode,
   Sparkles,
   Play,
+  Pencil,
 } from 'lucide-react';
 
 type TabKey = 'dashboard' | 'vouchers' | 'profiles' | 'sessions' | 'resellers' | 'radius_db';
@@ -81,7 +82,8 @@ export default function App() {
   });
   const [printableBatch, setPrintableBatch] = useState<{ batch: any; cards: any[] } | null>(null);
 
-  // Profile Creation State
+  // Profile Creation & Editing State
+  const [editingProfileId, setEditingProfileId] = useState<number | null>(null);
   const [newProfile, setNewProfile] = useState({
     name: '',
     displayName: '',
@@ -184,6 +186,38 @@ export default function App() {
     }
   };
 
+  const startEditProfile = (p: any) => {
+    setEditingProfileId(Number(p.id));
+    setNewProfile({
+      name: p.name || '',
+      displayName: p.display_name || '',
+      price: Number(p.price || 0),
+      costPrice: Number(p.cost_price || 0),
+      speedLimit: p.speed_limit || '',
+      timeLimitHours: p.time_limit ? Number((Number(p.time_limit) / 3600).toFixed(2)) : 0,
+      dataLimitMb: p.data_limit_mb ? Number(p.data_limit_mb) : 0,
+      validityDays: p.validity_days ? Number(p.validity_days) : 0,
+      simultaneousUse: Number(p.simultaneous_use || 1),
+      portLimit: Number(p.port_limit || 1),
+    });
+  };
+
+  const cancelEditProfile = () => {
+    setEditingProfileId(null);
+    setNewProfile({
+      name: '',
+      displayName: '',
+      price: 10,
+      costPrice: 7,
+      speedLimit: '',
+      timeLimitHours: 24,
+      dataLimitMb: 10240,
+      validityDays: 30,
+      simultaneousUse: 1,
+      portLimit: 1,
+    });
+  };
+
   const handleCreateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -192,36 +226,35 @@ export default function App() {
       const dataMb = Number(newProfile.dataLimitMb);
       const validityDaysNum = Number(newProfile.validityDays);
       const validityDays = validityDaysNum > 0 ? Math.round(validityDaysNum) : null;
+      const bodyPayload = {
+        name: newProfile.name.trim(),
+        displayName: newProfile.displayName.trim(),
+        price: Number(newProfile.price),
+        costPrice: Number(newProfile.costPrice),
+        speedLimit: speedLimit || null,
+        timeLimit: timeHours > 0 ? Math.round(timeHours * 3600) : null,
+        dataLimitMb: dataMb > 0 ? Math.round(dataMb) : null,
+        validityDays,
+        validity_days: validityDays,
+        simultaneousUse: Number(newProfile.simultaneousUse),
+        portLimit: Number(newProfile.portLimit),
+      };
 
-      await apiFetch('/api/profiles', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: newProfile.name.trim(),
-          displayName: newProfile.displayName.trim(),
-          price: Number(newProfile.price),
-          costPrice: Number(newProfile.costPrice),
-          speedLimit: speedLimit || null,
-          timeLimit: timeHours > 0 ? Math.round(timeHours * 3600) : null,
-          dataLimitMb: dataMb > 0 ? Math.round(dataMb) : null,
-          validityDays,
-          validity_days: validityDays,
-          simultaneousUse: Number(newProfile.simultaneousUse),
-          portLimit: Number(newProfile.portLimit),
-        }),
-      });
-      showBanner('success', 'تم إنشاء الباقة ومزامنة خصائص MikroTik مع radgroupreply و radgroupcheck');
-      setNewProfile({
-        name: '',
-        displayName: '',
-        price: 10,
-        costPrice: 7,
-        speedLimit: '',
-        timeLimitHours: 24,
-        dataLimitMb: 10240,
-        validityDays: 30,
-        simultaneousUse: 1,
-        portLimit: 1,
-      });
+      if (editingProfileId !== null) {
+        await apiFetch(`/api/profiles/${editingProfileId}`, {
+          method: 'PUT',
+          body: JSON.stringify(bodyPayload),
+        });
+        showBanner('success', 'تم تعديل الباقة ومزامنة FreeRADIUS بنجاح دون التأثير على الكروت المرتبطة');
+      } else {
+        await apiFetch('/api/profiles', {
+          method: 'POST',
+          body: JSON.stringify(bodyPayload),
+        });
+        showBanner('success', 'تم إنشاء الباقة ومزامنة خصائص MikroTik مع radgroupreply و radgroupcheck');
+      }
+
+      cancelEditProfile();
       loadAllData();
     } catch (err: any) {
       showBanner('error', err.message);
@@ -229,8 +262,10 @@ export default function App() {
   };
 
   const handleDeleteProfile = async (id: number) => {
+    if (!window.confirm('هل أنت متأكد من حذف هذه الباقة؟ (لا يمكن حذف باقة مرتبطة بكروت حالية)')) return;
     try {
       await apiFetch(`/api/profiles/${id}`, { method: 'DELETE' });
+      if (editingProfileId === id) cancelEditProfile();
       showBanner('success', 'تم حذف الباقة وإزالة خصائصها من جداول FreeRADIUS');
       loadAllData();
     } catch (err: any) {
@@ -911,8 +946,17 @@ export default function App() {
                 className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4 h-fit"
               >
                 <h3 className="font-bold text-slate-800 flex items-center gap-2 border-b pb-3">
-                  <Plus className="w-5 h-5 text-indigo-600" />
-                  إضافة باقة سرعة جديدة (تزامن مع `radgroupreply`)
+                  {editingProfileId !== null ? (
+                    <>
+                      <Pencil className="w-5 h-5 text-amber-600" />
+                      تعديل الباقة ({newProfile.displayName || newProfile.name})
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-5 h-5 text-indigo-600" />
+                      إضافة باقة جديدة (تزامن مع `radgroupreply`)
+                    </>
+                  )}
                 </h3>
 
                 <div>
@@ -1032,8 +1076,17 @@ export default function App() {
                   type="submit"
                   className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 rounded-xl transition"
                 >
-                  حفظ الباقة ومزامنة FreeRADIUS
+                  {editingProfileId !== null ? 'حفظ التعديلات ومزامنة FreeRADIUS' : 'حفظ الباقة ومزامنة FreeRADIUS'}
                 </button>
+                {editingProfileId !== null && (
+                  <button
+                    type="button"
+                    onClick={cancelEditProfile}
+                    className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 rounded-xl transition"
+                  >
+                    إلغاء التعديل
+                  </button>
+                )}
               </form>
 
               {/* Profiles List with Synchronized RADIUS Attributes */}
@@ -1073,13 +1126,22 @@ export default function App() {
                         </p>
                       </div>
 
-                      <button
-                        onClick={() => handleDeleteProfile(p.id)}
-                        className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition"
-                        title="حذف الباقة"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => startEditProfile(p)}
+                          className="text-amber-600 hover:bg-amber-50 p-2 rounded-lg transition"
+                          title="تعديل الباقة"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteProfile(p.id)}
+                          className="text-red-500 hover:bg-red-50 p-2 rounded-lg transition"
+                          title="حذف الباقة"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
