@@ -353,22 +353,45 @@ class RadiusEngine {
 
   createProfile(dto) {
     const id = this.profiles_meta.length + 1;
+    const name = String(dto.name || '').trim();
+    const displayName = String(dto.displayName ?? dto.display_name ?? '').trim() || name;
+    const speedLimit = String(dto.speedLimit ?? dto.speed_limit ?? '').trim();
+
+    const rawTimeLimit = dto.timeLimit ?? dto.time_limit;
+    const timeLimit = Number(rawTimeLimit) > 0 ? Math.round(Number(rawTimeLimit)) : null;
+
+    const rawDataLimitMb = dto.dataLimitMb ?? dto.data_limit_mb;
+    const dataLimitMb = Number(rawDataLimitMb) > 0 ? Math.round(Number(rawDataLimitMb)) : null;
+
+    const rawValidityDays = dto.validityDays ?? dto.validity_days;
+    const validityDays = Number(rawValidityDays) > 0 ? Math.round(Number(rawValidityDays)) : null;
+
+    const simultaneousUse = Number(dto.simultaneousUse ?? dto.simultaneous_use ?? 1) || 1;
+    const portLimit = Number(dto.portLimit ?? dto.port_limit ?? 1) || 1;
+
     const row = {
       id,
-      name: dto.name,
-      display_name: dto.displayName,
-      price: Number(dto.price),
-      cost_price: Number(dto.costPrice),
-      speed_limit: dto.speedLimit,
-      time_limit: dto.timeLimit ?? null,
-      data_limit_mb: dto.dataLimitMb ?? null,
-      validity_days: dto.validityDays ?? 3,
-      simultaneous_use: Number(dto.simultaneousUse || 1),
-      port_limit: Number(dto.portLimit || 1),
+      name,
+      display_name: displayName,
+      price: Number(dto.price || 0),
+      cost_price: Number(dto.costPrice ?? dto.cost_price ?? 0),
+      speed_limit: speedLimit,
+      time_limit: timeLimit,
+      data_limit_mb: dataLimitMb,
+      validity_days: validityDays,
+      simultaneous_use: simultaneousUse,
+      port_limit: portLimit,
       is_active: 1,
     };
     this.profiles_meta.push(row);
-    this.syncGroupRadiusTables(dto);
+    this.syncGroupRadiusTables({
+      name,
+      speedLimit,
+      timeLimit,
+      dataLimitMb,
+      simultaneousUse,
+      portLimit,
+    });
     return row;
   }
 
@@ -385,8 +408,18 @@ class RadiusEngine {
     this.radgroupreply = this.radgroupreply.filter((r) => r.groupname !== dto.name);
     this.radgroupcheck = this.radgroupcheck.filter((c) => c.groupname !== dto.name);
 
+    const speedLimit = String(dto.speedLimit ?? dto.speed_limit ?? '').trim();
+    if (speedLimit) {
+      this.radgroupreply.push({
+        id: this.nextId(),
+        groupname: dto.name,
+        attribute: 'Mikrotik-Rate-Limit',
+        op: ':=',
+        value: speedLimit,
+      });
+    }
+
     this.radgroupreply.push(
-      { id: this.nextId(), groupname: dto.name, attribute: 'Mikrotik-Rate-Limit', op: ':=', value: dto.speedLimit },
       { id: this.nextId(), groupname: dto.name, attribute: 'Port-Limit', op: ':=', value: String(dto.portLimit || 1) },
       { id: this.nextId(), groupname: dto.name, attribute: 'Acct-Interim-Interval', op: ':=', value: '60' }
     );
@@ -402,14 +435,26 @@ class RadiusEngine {
     }
 
     if (dto.dataLimitMb && dto.dataLimitMb > 0) {
-      const bytes = BigInt(dto.dataLimitMb) * BigInt(1024 * 1024);
+      const FOUR_GIB = 4294967296n;
+      const totalBytes = BigInt(dto.dataLimitMb) * 1048576n;
+      const gigawords = totalBytes / FOUR_GIB;
+      const lowBytes = totalBytes % FOUR_GIB;
       this.radgroupreply.push({
         id: this.nextId(),
         groupname: dto.name,
         attribute: 'Mikrotik-Total-Limit',
         op: ':=',
-        value: bytes.toString(),
+        value: lowBytes.toString(),
       });
+      if (gigawords > 0n) {
+        this.radgroupreply.push({
+          id: this.nextId(),
+          groupname: dto.name,
+          attribute: 'Mikrotik-Total-Limit-Gigawords',
+          op: ':=',
+          value: gigawords.toString(),
+        });
+      }
     }
 
     this.radgroupcheck.push({
@@ -602,6 +647,7 @@ class RadiusEngine {
     const usedDownloadBytes = activeSession
       ? activeSession.acctoutputoctets
       : card.used_download_bytes || 0;
+    const usedTotalBytes = usedUploadBytes + usedDownloadBytes;
     const usedUptimeSeconds = activeSession
       ? activeSession.acctsessiontime
       : card.used_uptime_seconds || 0;
@@ -610,19 +656,24 @@ class RadiusEngine {
     const remainingSeconds = totalLimitSeconds
       ? Math.max(0, totalLimitSeconds - usedUptimeSeconds)
       : null;
+    const dataLimitMb = profile?.data_limit_mb ?? null;
+    const totalQuotaBytes = dataLimitMb ? Number(dataLimitMb) * 1024 * 1024 : null;
+    const remainingBytes = totalQuotaBytes !== null ? Math.max(0, totalQuotaBytes - usedTotalBytes) : null;
 
     return {
       card: {
         ...card,
         profile_name: profile?.name || card.profile_name,
         profile_display_name: profile?.display_name || card.profile_display_name,
-        speed_limit: card.custom_rate_limit || profile?.speed_limit || '2M/2M',
-        data_limit_mb: profile?.data_limit_mb ?? null,
+        speed_limit: card.custom_rate_limit || profile?.speed_limit || '',
+        data_limit_mb: dataLimitMb,
         time_limit: totalLimitSeconds,
-        validity_days: profile?.validity_days ?? 3,
+        validity_days: profile?.validity_days ?? null,
         price: profile?.price ?? card.price ?? 0,
         used_upload_bytes: usedUploadBytes,
         used_download_bytes: usedDownloadBytes,
+        used_total_bytes: usedTotalBytes,
+        remaining_bytes: remainingBytes,
         used_uptime_seconds: usedUptimeSeconds,
         remaining_seconds: remainingSeconds,
         last_ip: activeSession?.framedipaddress || card.last_ip || 'غير معروف',
@@ -1614,8 +1665,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                   <th>كلمة المرور</th>
                   <th>الباقة (Profile)</th>
                   <th>الحالة</th>
-                  <th>الاستهلاك (تحميل / رفع)</th>
+                  <th>الاستهلاك (الإجمالي / تحميل / رفع)</th>
                   <th>الوقت المستهلك</th>
+                  <th>أول استخدام / الانتهاء</th>
                   <th>المودم / الأكسس بوينت (IP)</th>
                   <th>المالك</th>
                   <th>الإجراءات الخمسة</th>
@@ -1662,6 +1714,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                   <th>مدة الاتصال</th>
                   <th>الرفع (Upload)</th>
                   <th>التحميل (Download)</th>
+                  <th>الإجمالي (رفع + تحميل)</th>
                   <th>الإجراءات التشغيلية (فصل / تعطيل / تمكين / تصفير / حذف)</th>
                 </tr>
               </thead>
@@ -1799,18 +1852,26 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 </div>
               </div>
               <div class="field">
-                <label>سرعة الميكروتك (Mikrotik-Rate-Limit)</label>
-                <input type="text" id="prof-speed" dir="ltr" value="6M/6M" required />
+                <label>سرعة الميكروتك (Mikrotik-Rate-Limit) — اختياري</label>
+                <input type="text" id="prof-speed" dir="ltr" value="" placeholder="مثال: 6M/6M" />
+                <div style="font-size:11px; color:#64748b; margin-top:4px;">اختياري — اتركه فارغاً للتحكم بالسرعة من Queues في المايكروتك</div>
               </div>
               <div class="grid-2">
                 <div class="field">
-                  <label>الوقت المتاح (ساعات)</label>
-                  <input type="number" id="prof-hours" value="72" />
+                  <label>وقت الاستخدام الفعلي (ساعات)</label>
+                  <input type="number" id="prof-hours" value="72" min="0" step="any" />
+                  <div style="font-size:11px; color:#64748b; margin-top:4px;">يقبل 0 لوقت استخدام مفتوح ومعتمد على الصلاحية والبيانات فقط</div>
                 </div>
                 <div class="field">
-                  <label>الكوتا بالميجابايت (MB)</label>
-                  <input type="number" id="prof-quota" value="10240" />
+                  <label>الكوتا الإجمالية بالميجابايت (MB)</label>
+                  <input type="number" id="prof-quota" value="10240" min="0" />
+                  <div style="font-size:11px; color:#64748b; margin-top:4px;">مثال: 10240 لـ 10GB أو 20480 لـ 20GB (ضع 0 لغير محدود)</div>
                 </div>
+              </div>
+              <div class="field">
+                <label>صلاحية الكارت من أول استخدام (أيام)</label>
+                <input type="number" id="prof-validity" value="30" min="0" />
+                <div style="font-size:11px; color:#64748b; margin-top:4px;">الافتراضي 30 يوماً — يقبل 0 لبدون انتهاء صلاحية</div>
               </div>
               <button type="submit" class="btn btn-primary btn-block">💾 حفظ الباقة ومزامنة FreeRADIUS</button>
             </form>
@@ -2045,6 +2106,42 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       return r + 's';
     }
 
+    function formatQuotaMb(mb) {
+      const val = Number(mb);
+      if (!val || val <= 0) return 'غير محدود';
+      if (val >= 1024) {
+        const gb = val / 1024;
+        const gbStr = Number.isInteger(gb) ? String(gb) : gb.toFixed(1);
+        return gbStr + ' GB (' + val + ' MB)';
+      }
+      return val + ' MB';
+    }
+
+    function formatHoursFromSeconds(sec) {
+      const val = Number(sec);
+      if (!val || val <= 0) return 'مفتوح (غير محدود)';
+      const hrs = val / 3600;
+      return (Number.isInteger(hrs) ? String(hrs) : hrs.toFixed(1)) + ' ساعة';
+    }
+
+    function formatValidityDays(days) {
+      const val = Number(days);
+      if (!val || val <= 0) return 'بدون انتهاء صلاحية';
+      return val + ' يوم';
+    }
+
+    function formatSpeedLabel(speed) {
+      const s = String(speed || '').trim();
+      return s || 'من المايكروتك (Queues)';
+    }
+
+    function formatDateTime(val) {
+      if (!val) return '-';
+      const d = new Date(val);
+      if (Number.isNaN(d.getTime())) return String(val);
+      return d.toLocaleString('en-US');
+    }
+
     function showToast(type, msg) {
       const box = document.getElementById('toast-box');
       box.style.display = 'block';
@@ -2193,7 +2290,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       document.getElementById('cards-count-label').textContent = 'عدد الكروت المعروضة: ' + data.cards.length + ' كرت';
       const tbody = document.getElementById('cards-tbody');
       if (!data.cards.length) {
-        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:28px; color:#94a3b8;">لا توجد كروت مطابقة للفلتر المحدد</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:28px; color:#94a3b8;">لا توجد كروت مطابقة للفلتر المحدد</td></tr>';
         return;
       }
 
@@ -2204,6 +2301,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         else if (c.status === 'EXPIRED') statusBadge = '<span class="tag tag-amber">منتهي</span>';
         else statusBadge = '<span class="tag tag-red">معطل</span>';
 
+        const upB = Number(c.used_upload_bytes) || 0;
+        const downB = Number(c.used_download_bytes) || 0;
+        const totalB = (c.used_total_bytes !== undefined && c.used_total_bytes !== null) ? Number(c.used_total_bytes) : (upB + downB);
+        const firstUsedHtml = c.first_used_at ? formatDateTime(c.first_used_at) : 'لم يُستخدم';
+        const expiryHtml = c.expires_at
+          ? formatDateTime(c.expires_at)
+          : (Number(c.validity_days) > 0 ? c.validity_days + ' يوم من أول دخول' : 'بدون انتهاء');
+
         return \`
           <tr>
             <td>
@@ -2212,12 +2317,21 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               </button>
             </td>
             <td class="mono">\${c.cleartext_password}</td>
-            <td><b>\${c.profile_name}</b> <span style="font-size:11px; color:#64748b;">(\${c.speed_limit})</span></td>
+            <td>
+              <b>\${c.profile_name || '-'}</b>
+              \${c.profile_display_name && c.profile_display_name !== c.profile_name ? \`<span style="font-size:11px; color:#334155;"> (\${c.profile_display_name})</span>\` : ''}
+              <span style="font-size:11px; color:#64748b;">(\${c.speed_limit ? c.speed_limit : 'Queues'})</span>
+            </td>
             <td>\${statusBadge}</td>
             <td class="mono" dir="ltr" style="font-size:11.5px;">
-              ↓ \${formatMib(c.used_download_bytes)} | ↑ \${formatMib(c.used_upload_bytes)}
+              <div><b style="color:#4338ca;">\${formatBytes(totalB)}</b>\${c.data_limit_mb ? \` <span style="color:#64748b; font-size:10.5px;">/ \${formatQuotaMb(c.data_limit_mb)}</span>\` : ''}</div>
+              <div style="font-size:10.5px; color:#64748b;">↓ \${formatBytes(downB)} | ↑ \${formatBytes(upB)}</div>
             </td>
             <td class="mono">\${formatUptime(c.used_uptime_seconds)}</td>
+            <td style="font-size:11px; line-height:1.45;">
+              <div>أول استخدام: <span class="mono" dir="ltr">\${firstUsedHtml}</span></div>
+              <div style="color:#64748b;">الانتهاء: <span class="mono" dir="ltr">\${expiryHtml}</span></div>
+            </td>
             <td class="mono" dir="ltr" style="font-size:11.5px;">
               \${c.modem_ip ? \`<b style="color:#0f172a;">\${c.modem_ip}</b> <span style="color:#64748b;">(\${c.modem_name})</span>\` : '<span style="color:#94a3b8;">لم يتصل بعد</span>'}
             </td>
@@ -2227,6 +2341,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         \`;
       }).join('');
     }
+
+    let sessionsRefreshing = false;
 
     if (!window.__sessionsAutoRefresh) {
       window.__sessionsAutoRefresh = setInterval(() => {
@@ -2238,35 +2354,47 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     async function loadSessions() {
-      const q = document.getElementById('session-search')?.value || '';
-      const sessData = await api('/api/sessions/active?search=' + encodeURIComponent(q));
-      document.getElementById('nav-sessions-badge').textContent = sessData.count;
-      const tbody = document.getElementById('sessions-tbody');
-      if (!sessData.sessions.length) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:30px; color:#94a3b8;">لا توجد جلسات نشطة مطابقة حالياً</td></tr>';
-        return;
+      if (sessionsRefreshing) return;
+      sessionsRefreshing = true;
+      try {
+        const q = document.getElementById('session-search')?.value || '';
+        const sessData = await api('/api/sessions/active?search=' + encodeURIComponent(q));
+        document.getElementById('nav-sessions-badge').textContent = sessData.count;
+        const tbody = document.getElementById('sessions-tbody');
+        if (!sessData.sessions.length) {
+          tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:30px; color:#94a3b8;">لا توجد جلسات نشطة مطابقة حالياً</td></tr>';
+          return;
+        }
+        tbody.innerHTML = sessData.sessions.map((s) => {
+          const up = Number(s.acctinputoctets) || 0;
+          const down = Number(s.acctoutputoctets) || 0;
+          const total = (s.total_bytes !== undefined && s.total_bytes !== null) ? Number(s.total_bytes) : (up + down);
+          return \`
+            <tr>
+              <td>
+                <button class="user-link" onclick="openUserModal('\${s.username}')" title="اضغط لفتح تفاصيل المستخدم/الكرت">
+                  👤 \${s.username}
+                </button>
+              </td>
+              <td class="mono" dir="ltr">\${s.framedipaddress || '-'}</td>
+              <td class="mono" dir="ltr" style="color:#475569;">\${s.callingstationid || '-'}</td>
+              <td class="mono" dir="ltr">
+                <span class="tag tag-emerald" style="font-size:11.5px;">
+                  🌐 \${s.modem_ip || s.nasipaddress || '-'}
+                </span>
+                <span style="font-size:11px; color:#475569; margin-right:4px;">(\${s.modem_name || 'Main-AP'})</span>
+              </td>
+              <td><span class="tag tag-indigo mono">⏱️ \${formatUptime(s.acctsessiontime)}</span></td>
+              <td class="mono" dir="ltr" style="color:#b45309;">⬆️ \${formatBytes(up)}</td>
+              <td class="mono" dir="ltr" style="color:#047857;">⬇️ \${formatBytes(down)}</td>
+              <td class="mono" dir="ltr"><b style="color:#4338ca;">\${formatBytes(total)}</b></td>
+              <td>\${renderFiveActionsHtml(s.username, true, s.card_status || 'ACTIVE', 'sess')}</td>
+            </tr>
+          \`;
+        }).join('');
+      } finally {
+        sessionsRefreshing = false;
       }
-      tbody.innerHTML = sessData.sessions.map((s) => \`
-        <tr>
-          <td>
-            <button class="user-link" onclick="openUserModal('\${s.username}')" title="اضغط لفتح تفاصيل المستخدم/الكرت">
-              👤 \${s.username}
-            </button>
-          </td>
-          <td class="mono" dir="ltr">\${s.framedipaddress}</td>
-          <td class="mono" dir="ltr" style="color:#475569;">\${s.callingstationid}</td>
-          <td class="mono" dir="ltr">
-            <span class="tag tag-emerald" style="font-size:11.5px;">
-              🌐 \${s.modem_ip || s.nasipaddress}
-            </span>
-            <span style="font-size:11px; color:#475569; margin-right:4px;">(\${s.modem_name || 'Main-AP'})</span>
-          </td>
-          <td><span class="tag tag-indigo mono">⏱️ \${formatUptime(s.acctsessiontime)}</span></td>
-          <td class="mono" dir="ltr" style="color:#b45309;">⬆️ \${formatMib(s.acctinputoctets)}</td>
-          <td class="mono" dir="ltr" style="color:#047857;">⬇️ \${formatMib(s.acctoutputoctets)}</td>
-          <td>\${renderFiveActionsHtml(s.username, true, s.card_status || 'ACTIVE', 'sess')}</td>
-        </tr>
-      \`).join('');
     }
 
     /**
@@ -2311,11 +2439,26 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       document.getElementById('um-modal-title').textContent = 'تفاصيل المستخدم — ' + c.username;
       document.getElementById('um-sessions-count').textContent = sessions.length;
 
-      const transferLimitText = c.data_limit_mb ? Number(c.data_limit_mb).toFixed(1) + ' MiB' : 'غير محدود';
-      const validityText = (c.validity_days || 3) + 'd';
-      const startTimeText = c.first_used_at ? new Date(c.first_used_at).toLocaleString('en-US') : 'لم يحدد';
-      const endTimeText = c.expires_at ? new Date(c.expires_at).toLocaleString('en-US') : 'لم يحدد';
-      const remTimeText = c.remaining_seconds !== null ? formatUptime(c.remaining_seconds) : 'غير محدود';
+      const transferLimitText = formatQuotaMb(c.data_limit_mb);
+      const validityText = formatValidityDays(c.validity_days);
+      const profileUptimeText = formatHoursFromSeconds(c.time_limit);
+      const startTimeText = c.first_used_at ? formatDateTime(c.first_used_at) : 'لم يُستخدم بعد';
+      const endTimeText = c.expires_at
+        ? formatDateTime(c.expires_at)
+        : (Number(c.validity_days) > 0 ? 'يبدأ عند أول دخول (' + c.validity_days + ' يوم)' : 'بدون انتهاء صلاحية');
+      const remTimeText = c.remaining_seconds !== null && c.remaining_seconds !== undefined ? formatUptime(c.remaining_seconds) : 'غير محدود';
+      const usedUploadBytes = Number(c.used_upload_bytes) || 0;
+      const usedDownloadBytes = Number(c.used_download_bytes) || 0;
+      const totalUsedBytes = (c.used_total_bytes !== undefined && c.used_total_bytes !== null)
+        ? Number(c.used_total_bytes)
+        : (usedUploadBytes + usedDownloadBytes);
+      const totalQuotaBytes = c.data_limit_mb ? Number(c.data_limit_mb) * 1024 * 1024 : null;
+      const remainingBytes = (c.remaining_bytes !== undefined && c.remaining_bytes !== null)
+        ? Number(c.remaining_bytes)
+        : (totalQuotaBytes !== null ? Math.max(0, totalQuotaBytes - totalUsedBytes) : null);
+      const remainingBytesText = c.data_limit_mb
+        ? formatBytes(remainingBytes) + ' / ' + formatQuotaMb(c.data_limit_mb)
+        : 'غير محدود';
 
       document.getElementById('um-modal-body').innerHTML = \`
         <!-- 1. الرئيسي (Main) -->
@@ -2346,41 +2489,37 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           <div class="um-sec-title" onclick="toggleSec('um-sec-prof')">▲ الملف المستخدم</div>
           <div class="um-sec-content" id="um-sec-prof">
             <div class="um-row">
-              <div class="um-label">:الملف المستخدم</div>
-              <div class="um-val mono"><b>\${c.profile_name}</b> (\${c.profile_display_name})</div>
+              <div class="um-label">:الباقة المرتبطة</div>
+              <div class="um-val mono"><b>\${c.profile_name || '-'}</b> (\${c.profile_display_name || '-'})</div>
             </div>
             <div class="um-row">
-              <div class="um-label">:يبدأ الوقت</div>
+              <div class="um-label">:تاريخ أول استخدام</div>
               <div class="um-val mono" dir="ltr">\${startTimeText}</div>
             </div>
             <div class="um-row">
-              <div class="um-label">:ينتهي الوقت</div>
+              <div class="um-label">:تاريخ الانتهاء</div>
               <div class="um-val mono" dir="ltr">\${endTimeText}</div>
+            </div>
+            <div class="um-row">
+              <div class="um-label">:وقت الاستخدام الفعلي للباقة</div>
+              <div class="um-val">\${profileUptimeText}</div>
             </div>
             <div class="um-row">
               <div class="um-label">:الوقت المتبقي</div>
               <div class="um-val mono" dir="ltr">\${remTimeText}</div>
             </div>
             <div class="um-row">
-              <div class="um-label">:تحديد التحميل</div>
-              <div class="um-val">غير محدود</div>
-            </div>
-            <div class="um-row">
-              <div class="um-label">:الرفع المحدد</div>
-              <div class="um-val">غير محدود</div>
-            </div>
-            <div class="um-row">
-              <div class="um-label">:تحديد النقل</div>
+              <div class="um-label">:الكوتا الإجمالية (النقل)</div>
               <div class="um-val mono" dir="ltr">\${transferLimitText}</div>
             </div>
             <div class="um-row">
-              <div class="um-label">:تحديد الوقت</div>
-              <div class="um-val mono" dir="ltr">\${validityText}</div>
+              <div class="um-label">:صلاحية الكارت من أول استخدام</div>
+              <div class="um-val">\${validityText}</div>
             </div>
             <div class="um-row">
               <div class="um-label">Rate limit:</div>
               <div>
-                <input type="text" id="um-edit-ratelimit" class="um-input" dir="ltr" value="\${c.speed_limit || ''}" placeholder="مثال: 2M/2M" />
+                <input type="text" id="um-edit-ratelimit" class="um-input" dir="ltr" value="\${c.speed_limit || ''}" placeholder="فارغ = حسب الباقة أو Queues في المايكروتك" />
               </div>
             </div>
           </div>
@@ -2410,11 +2549,19 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           <div class="um-sec-content" id="um-sec-stats">
             <div class="um-row">
               <div class="um-label">:الرفع المستخدم</div>
-              <div class="um-val mono" dir="ltr">\${formatMib(c.used_upload_bytes)}</div>
+              <div class="um-val mono" dir="ltr">\${formatBytes(usedUploadBytes)}</div>
             </div>
             <div class="um-row">
               <div class="um-label">:التحميل المستخدم</div>
-              <div class="um-val mono" dir="ltr">\${formatMib(c.used_download_bytes)}</div>
+              <div class="um-val mono" dir="ltr">\${formatBytes(usedDownloadBytes)}</div>
+            </div>
+            <div class="um-row">
+              <div class="um-label">:الاستهلاك الإجمالي (تحميل + رفع)</div>
+              <div class="um-val mono" dir="ltr" style="color:#4338ca; font-weight:800;">\${formatBytes(totalUsedBytes)}</div>
+            </div>
+            <div class="um-row">
+              <div class="um-label">:الرصيد المتبقي من البيانات</div>
+              <div class="um-val mono" dir="ltr" style="color:#059669; font-weight:800;">\${remainingBytesText}</div>
             </div>
             <div class="um-row">
               <div class="um-label">:الوقت المستخدم</div>
@@ -2606,7 +2753,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                   </div>
                   <div class="v-body">
                     <div style="flex:1;">
-                      <div style="font-size:8.5px; color:#64748b;">\${batch.profile_display_name} (\${batch.speed_limit})</div>
+                      <div style="font-size:8.5px; color:#64748b;">\${batch.profile_display_name}\${batch.speed_limit ? \` (\${batch.speed_limit})\` : ''}</div>
                       \${batch.voucher_type === 'PIN_ONLY'
                         ? \`<div class="v-pin">\${c.username}</div>\`
                         : \`<div class="mono" style="font-size:9.5px; margin-top:2px;">
@@ -2652,16 +2799,23 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     async function handleCreateProfile(e) {
       e.preventDefault();
       try {
-        const hours = Number(document.getElementById('prof-hours').value);
+        const speedVal = document.getElementById('prof-speed').value.trim();
+        const hoursRaw = document.getElementById('prof-hours').value;
+        const hours = hoursRaw === '' ? 0 : Number(hoursRaw);
+        const quotaRaw = document.getElementById('prof-quota').value;
+        const quotaMb = quotaRaw === '' ? 0 : Number(quotaRaw);
+        const validityRaw = document.getElementById('prof-validity').value;
+        const validityDays = validityRaw === '' ? 0 : Number(validityRaw);
         const payload = {
-          name: document.getElementById('prof-name').value,
-          displayName: document.getElementById('prof-display').value,
+          name: document.getElementById('prof-name').value.trim(),
+          displayName: document.getElementById('prof-display').value.trim(),
           price: Number(document.getElementById('prof-price').value),
           costPrice: Number(document.getElementById('prof-cost').value),
-          speedLimit: document.getElementById('prof-speed').value,
-          timeLimit: hours ? hours * 3600 : null,
-          dataLimitMb: Number(document.getElementById('prof-quota').value) || null,
-          validityDays: 30,
+          speedLimit: speedVal || null,
+          timeLimit: hours > 0 ? Math.round(hours * 3600) : null,
+          dataLimitMb: quotaMb > 0 ? Math.round(quotaMb) : null,
+          validityDays: validityDays > 0 ? Math.round(validityDays) : null,
+          validity_days: validityDays > 0 ? Math.round(validityDays) : null,
           simultaneousUse: 1,
           portLimit: 1
         };
@@ -2669,6 +2823,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         showToast('success', 'تم حفظ الباقة ومزامنة خصائص الميكروتك في radgroupreply و radgroupcheck');
         document.getElementById('prof-name').value = '';
         document.getElementById('prof-display').value = '';
+        document.getElementById('prof-speed').value = '';
         refreshAll();
       } catch (err) {
         showToast('error', err.message);
@@ -2967,7 +3122,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           ? '<option value="">-- أنشئ باقة (Profile) أولاً من تبويب الباقات --</option>'
           : profiles.map((p) => \`
           <option value="\${p.id}" \${String(p.id) === String(currentSelectedProf) ? 'selected' : ''}>
-            \${p.display_name} (\${p.speed_limit}) - التكلفة: \${p.cost_price} | البيع: \${p.price}
+            \${p.display_name} (\${p.speed_limit ? p.speed_limit : 'Queues'}) - التكلفة: \${p.cost_price} | البيع: \${p.price}
           </option>
         \`).join('');
 
@@ -3013,10 +3168,24 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 <span style="font-size:17px; font-weight:800;">\${p.display_name}</span>
                 <span class="tag tag-indigo mono" style="margin-right:8px;">\${p.name}</span>
                 <div style="font-size:12px; color:#64748b; margin-top:4px;">
-                  سعر البيع: <b>\${p.price}</b> | تكلفة الموزع: <b>\${p.cost_price}</b> | السرعة: <b class="mono">\${p.speed_limit}</b>
+                  سعر البيع: <b>\${p.price}</b> | تكلفة الموزع: <b>\${p.cost_price}</b> | السرعة: <b class="\${p.speed_limit ? 'mono' : ''}">\${formatSpeedLabel(p.speed_limit)}</b>
                 </div>
               </div>
               <button class="btn btn-danger btn-xs" onclick="deleteProfile(\${p.id})">🗑️ حذف</button>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:12px;">
+              <div style="background:#eef2ff; border:1px solid #c7d2fe; border-radius:10px; padding:8px 11px;">
+                <div style="font-size:11px; color:#4338ca; font-weight:700;">📦 الكوتا الإجمالية</div>
+                <div class="mono" dir="ltr" style="font-size:13px; font-weight:800; color:#1e1b4b; margin-top:2px;">\${formatQuotaMb(p.data_limit_mb)}</div>
+              </div>
+              <div style="background:#ecfdf5; border:1px solid #a7f3d0; border-radius:10px; padding:8px 11px;">
+                <div style="font-size:11px; color:#065f46; font-weight:700;">⏱️ وقت الاستخدام الفعلي</div>
+                <div style="font-size:13px; font-weight:800; color:#064e3b; margin-top:2px;">\${formatHoursFromSeconds(p.time_limit)}</div>
+              </div>
+              <div style="background:#fffbeb; border:1px solid #fde68a; border-radius:10px; padding:8px 11px;">
+                <div style="font-size:11px; color:#92400e; font-weight:700;">📅 الصلاحية التقويمية</div>
+                <div style="font-size:13px; font-weight:800; color:#78350f; margin-top:2px;">\${formatValidityDays(p.validity_days)}</div>
+              </div>
             </div>
             <div style="background:#f8fafc; padding:12px; border-radius:10px; border:1px solid #e2e8f0;">
               <div style="font-size:11px; font-weight:700; color:#64748b; margin-bottom:8px;">

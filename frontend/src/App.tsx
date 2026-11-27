@@ -87,10 +87,10 @@ export default function App() {
     displayName: '',
     price: 10,
     costPrice: 7,
-    speedLimit: '4M/4M',
+    speedLimit: '',
     timeLimitHours: 24,
-    dataLimitMb: 5120,
-    validityDays: 3,
+    dataLimitMb: 10240,
+    validityDays: 30,
     simultaneousUse: 1,
     portLimit: 1,
   });
@@ -187,17 +187,24 @@ export default function App() {
   const handleCreateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      const speedLimit = newProfile.speedLimit.trim();
+      const timeHours = Number(newProfile.timeLimitHours);
+      const dataMb = Number(newProfile.dataLimitMb);
+      const validityDaysNum = Number(newProfile.validityDays);
+      const validityDays = validityDaysNum > 0 ? Math.round(validityDaysNum) : null;
+
       await apiFetch('/api/profiles', {
         method: 'POST',
         body: JSON.stringify({
-          name: newProfile.name,
-          displayName: newProfile.displayName,
+          name: newProfile.name.trim(),
+          displayName: newProfile.displayName.trim(),
           price: Number(newProfile.price),
           costPrice: Number(newProfile.costPrice),
-          speedLimit: newProfile.speedLimit,
-          timeLimit: newProfile.timeLimitHours ? Number(newProfile.timeLimitHours) * 3600 : null,
-          dataLimitMb: newProfile.dataLimitMb ? Number(newProfile.dataLimitMb) : null,
-          validityDays: Number(newProfile.validityDays),
+          speedLimit: speedLimit || null,
+          timeLimit: timeHours > 0 ? Math.round(timeHours * 3600) : null,
+          dataLimitMb: dataMb > 0 ? Math.round(dataMb) : null,
+          validityDays,
+          validity_days: validityDays,
           simultaneousUse: Number(newProfile.simultaneousUse),
           portLimit: Number(newProfile.portLimit),
         }),
@@ -208,10 +215,10 @@ export default function App() {
         displayName: '',
         price: 10,
         costPrice: 7,
-        speedLimit: '4M/4M',
+        speedLimit: '',
         timeLimitHours: 24,
-        dataLimitMb: 5120,
-        validityDays: 3,
+        dataLimitMb: 10240,
+        validityDays: 30,
         simultaneousUse: 1,
         portLimit: 1,
       });
@@ -960,37 +967,65 @@ export default function App() {
 
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
-                    سرعة الميكروتك (`Mikrotik-Rate-Limit`)
+                    سرعة الميكروتك (Mikrotik-Rate-Limit) — اختياري
                   </label>
                   <input
                     type="text"
                     dir="ltr"
-                    placeholder="4M/4M"
+                    placeholder="مثال: 6M/6M"
                     value={newProfile.speedLimit}
                     onChange={(e) => setNewProfile({ ...newProfile, speedLimit: e.target.value })}
                     className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-mono"
                   />
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    اختياري — اتركه فارغاً للتحكم بالسرعة من Queues في المايكروتك
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">الوقت المتاح (ساعات)</label>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">وقت الاستخدام الفعلي (ساعات)</label>
                     <input
                       type="number"
+                      min={0}
+                      step="any"
                       value={newProfile.timeLimitHours}
                       onChange={(e) => setNewProfile({ ...newProfile, timeLimitHours: Number(e.target.value) })}
                       className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
                     />
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      يقبل 0 لوقت استخدام مفتوح ومعتمد على الصلاحية والبيانات فقط
+                    </p>
                   </div>
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">الكوتا بالميجابايت (MB)</label>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">الكوتا الإجمالية بالميجابايت (MB)</label>
                     <input
                       type="number"
+                      min={0}
                       value={newProfile.dataLimitMb}
                       onChange={(e) => setNewProfile({ ...newProfile, dataLimitMb: Number(e.target.value) })}
                       className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
                     />
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      مثال: 10240 لـ 10GB أو 20480 لـ 20GB
+                    </p>
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    صلاحية الكارت من أول استخدام (أيام)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={newProfile.validityDays}
+                    onChange={(e) => setNewProfile({ ...newProfile, validityDays: Number(e.target.value) })}
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  />
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    القيمة الافتراضية 30 يوماً — يقبل 0 لبدون انتهاء صلاحية
+                  </p>
                 </div>
 
                 <button
@@ -1003,7 +1038,20 @@ export default function App() {
 
               {/* Profiles List with Synchronized RADIUS Attributes */}
               <div className="lg:col-span-2 space-y-4">
-                {profiles.map((p) => (
+                {profiles.map((p) => {
+                  const quotaText = p.data_limit_mb && Number(p.data_limit_mb) > 0
+                    ? (Number(p.data_limit_mb) >= 1024
+                        ? `${Number((Number(p.data_limit_mb) / 1024).toFixed(1))} GB (${p.data_limit_mb} MB)`
+                        : `${p.data_limit_mb} MB`)
+                    : 'غير محدود';
+                  const uptimeText = p.time_limit && Number(p.time_limit) > 0
+                    ? `${Number((Number(p.time_limit) / 3600).toFixed(1))} ساعة`
+                    : 'مفتوح (غير محدود)';
+                  const validityText = p.validity_days && Number(p.validity_days) > 0
+                    ? `${p.validity_days} يوم`
+                    : 'بدون انتهاء صلاحية';
+
+                  return (
                   <div
                     key={p.id}
                     className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-4"
@@ -1018,7 +1066,10 @@ export default function App() {
                         </div>
                         <p className="text-xs text-slate-500 mt-1">
                           سعر البيع: <strong>{p.price} ر.س</strong> | تكلفة الموزع:{' '}
-                          <strong>{p.cost_price} ر.س</strong> | الصلاحية: {p.validity_days} يوم
+                          <strong>{p.cost_price} ر.س</strong> | السرعة:{' '}
+                          <strong className={p.speed_limit ? 'font-mono' : ''}>
+                            {p.speed_limit || 'من المايكروتك (Queues)'}
+                          </strong>
                         </p>
                       </div>
 
@@ -1029,6 +1080,21 @@ export default function App() {
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl px-3 py-2">
+                        <div className="text-[11px] font-bold text-indigo-700">الكوتا الإجمالية</div>
+                        <div className="font-mono text-xs font-extrabold text-indigo-950 mt-0.5" dir="ltr">{quotaText}</div>
+                      </div>
+                      <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl px-3 py-2">
+                        <div className="text-[11px] font-bold text-emerald-700">وقت الاستخدام الفعلي</div>
+                        <div className="text-xs font-extrabold text-emerald-950 mt-0.5">{uptimeText}</div>
+                      </div>
+                      <div className="bg-amber-50/70 border border-amber-200 rounded-xl px-3 py-2">
+                        <div className="text-[11px] font-bold text-amber-700">الصلاحية التقويمية</div>
+                        <div className="text-xs font-extrabold text-amber-950 mt-0.5">{validityText}</div>
+                      </div>
                     </div>
 
                     {/* Synced radgroupreply & radgroupcheck badges */}
@@ -1056,7 +1122,8 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
