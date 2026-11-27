@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import http from 'node:http';
 import { randomInt } from 'node:crypto';
 let dbStore = null;
@@ -2225,6 +2226,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           </tr>
         \`;
       }).join('');
+    }
+
+    if (!window.__sessionsAutoRefresh) {
+      window.__sessionsAutoRefresh = setInterval(() => {
+        const tb = document.getElementById('sessions-tbody');
+        if (!document.hidden && tb && tb.offsetParent !== null) {
+          loadSessions().catch(() => {});
+        }
+      }, 10000);
     }
 
     async function loadSessions() {
