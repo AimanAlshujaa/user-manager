@@ -979,6 +979,247 @@ class RadiusEngine {
 
     throw new Error('إجراء غير معروف');
   }
+
+  _filterCardsList(actor, filters = {}, { includeStatus = true } = {}) {
+    let list =
+      actor.role === 'SUPER_ADMIN'
+        ? this.voucher_cards
+        : this.voucher_cards.filter((c) => c.reseller_id === actor.id);
+
+    if (actor.role === 'SUPER_ADMIN' && filters.resellerId && filters.resellerId !== 'ALL') {
+      list = list.filter((c) => String(c.reseller_id) === String(filters.resellerId));
+    }
+
+    if (filters.profileId && filters.profileId !== 'ALL') {
+      list = list.filter((c) => String(c.profile_id) === String(filters.profileId));
+    }
+
+    if (filters.batchId && filters.batchId !== 'ALL') {
+      list = list.filter((c) => String(c.batch_id) === String(filters.batchId));
+    }
+
+    if (includeStatus && filters.status && filters.status !== 'ALL') {
+      list = list.filter((c) => c.status === filters.status);
+    }
+
+    const olderDays = Number(filters.expiredOlderThanDays);
+    if (includeStatus && Number.isFinite(olderDays) && olderDays > 0) {
+      const cutoffMs = Date.now() - Math.floor(olderDays) * 86400000;
+      list = list.filter((c) => {
+        if (c.status !== 'EXPIRED') return false;
+        const ref = c.expires_at || c.first_used_at || c.created_at;
+        const ts = ref ? new Date(ref).getTime() : 0;
+        return ts > 0 && ts <= cutoffMs;
+      });
+    }
+
+    const search = String(filters.search || '').trim().toLowerCase();
+    if (search) {
+      list = list.filter(
+        (c) =>
+          c.username.toLowerCase().includes(search) ||
+          (c.serial_number && c.serial_number.toLowerCase().includes(search)) ||
+          (c.last_ip && c.last_ip.toLowerCase().includes(search)) ||
+          (c.last_mac && c.last_mac.toLowerCase().includes(search)) ||
+          (c.modem_ip && c.modem_ip.toLowerCase().includes(search))
+      );
+    }
+
+    return list;
+  }
+
+  getCardsDirectory(actor, filters = {}) {
+    const allowedLimits = [20, 50, 100, 250, 500, 1000];
+    const limit = allowedLimits.includes(Number(filters.limit)) ? Number(filters.limit) : 50;
+    const requestedPage = Math.max(1, parseInt(filters.page, 10) || 1);
+
+    const baseList = this._filterCardsList(actor, filters, { includeStatus: false });
+    const statusCounts = { ALL: baseList.length, UNUSED: 0, ACTIVE: 0, EXPIRED: 0, DISABLED: 0 };
+    for (const c of baseList) {
+      if (Object.prototype.hasOwnProperty.call(statusCounts, c.status)) {
+        statusCounts[c.status] += 1;
+      }
+    }
+
+    let list = this._filterCardsList(actor, filters, { includeStatus: true }).slice();
+
+    const sort = filters.sort || 'newest';
+    if (sort === 'oldest') {
+      list.sort((a, b) => Number(a.id) - Number(b.id));
+    } else if (sort === 'username_asc') {
+      list.sort((a, b) => String(a.username).localeCompare(String(b.username)));
+    } else if (sort === 'expires_asc') {
+      list.sort((a, b) => {
+        const ea = a.expires_at ? new Date(a.expires_at).getTime() : Number.MAX_SAFE_INTEGER;
+        const eb = b.expires_at ? new Date(b.expires_at).getTime() : Number.MAX_SAFE_INTEGER;
+        return ea !== eb ? ea - eb : Number(b.id) - Number(a.id);
+      });
+    } else {
+      list.sort((a, b) => Number(b.id) - Number(a.id));
+    }
+
+    const total = list.length;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const safePage = Math.min(requestedPage, totalPages);
+    const offset = (safePage - 1) * limit;
+    const pageRows = list.slice(offset, offset + limit);
+
+    const activeSet = new Set(this.radacct.map((s) => s.username));
+    const enriched = pageRows.map((c) => ({
+      ...c,
+      is_online: activeSet.has(c.username),
+    }));
+
+    return {
+      count: enriched.length,
+      cards: enriched,
+      pagination: {
+        page: safePage,
+        limit,
+        total,
+        totalPages,
+      },
+      statusCounts,
+    };
+  }
+
+  _resolveBulkTargets(actor, payload = {}) {
+    const isSuper = actor.role === 'SUPER_ADMIN';
+    let rows = [];
+
+    if (payload.selectAllFiltered) {
+      rows = this._filterCardsList(actor, payload.filters || {}, { includeStatus: true });
+    } else {
+      const wanted = new Set(
+        (Array.isArray(payload.usernames) ? payload.usernames : [])
+          .map((u) => String(u || '').trim())
+          .filter(Boolean)
+      );
+      rows = this.voucher_cards.filter(
+        (c) => wanted.has(c.username) && (isSuper || c.reseller_id === actor.id)
+      );
+    }
+
+    const onlineSet = new Set(this.radacct.map((s) => s.username));
+    return { rows, onlineSet };
+  }
+
+  previewBulkCardAction(actor, payload = {}) {
+    const { rows, onlineSet } = this._resolveBulkTargets(actor, payload);
+    const breakdown = { UNUSED: 0, ACTIVE: 0, EXPIRED: 0, DISABLED: 0 };
+    let onlineCount = 0;
+    let nonActiveCount = 0;
+
+    for (const c of rows) {
+      if (Object.prototype.hasOwnProperty.call(breakdown, c.status)) {
+        breakdown[c.status] += 1;
+      }
+      const isOnline = onlineSet.has(c.username);
+      if (isOnline) onlineCount += 1;
+      if (c.status !== 'ACTIVE' && !isOnline) nonActiveCount += 1;
+    }
+
+    return {
+      total: rows.length,
+      onlineCount,
+      nonActiveCount,
+      breakdown,
+    };
+  }
+
+  executeBulkCardAction(actor, payload = {}) {
+    const action = String(payload.action || '').trim();
+    const resetMode = String(payload.resetMode || 'FULL_RESET').trim();
+    if (!['delete', 'disable', 'enable', 'reset', 'disconnect'].includes(action)) {
+      throw new Error('الإجراء الجماعي المطلوب غير مدعوم');
+    }
+
+    const { rows, onlineSet } = this._resolveBulkTargets(actor, payload);
+    const excludeActive = Boolean(payload.excludeActive);
+    const targetRows = excludeActive
+      ? rows.filter((c) => c.status !== 'ACTIVE' && !onlineSet.has(c.username))
+      : rows;
+
+    const skipped = rows.length - targetRows.length;
+    if (targetRows.length === 0) {
+      return {
+        totalTargeted: 0,
+        succeeded: 0,
+        skipped,
+        disconnectedOnline: 0,
+        action,
+        message:
+          skipped > 0
+            ? `لم يتم تنفيذ الإجراء: تم استثناء جميع الكروت المحددة (${skipped}) لأنها نشطة أو متصلة حالياً`
+            : 'لا توجد كروت مطابقة لتنفيذ الإجراء عليها',
+      };
+    }
+
+    let succeeded = 0;
+    let disconnectedOnline = 0;
+
+    for (const card of targetRows) {
+      const wasOnline = onlineSet.has(card.username);
+      if (action === 'disconnect') {
+        if (!wasOnline) continue;
+        this.executeCardAction(card.username, 'disconnect', resetMode);
+        disconnectedOnline += 1;
+        succeeded += 1;
+      } else {
+        if (wasOnline && (action === 'delete' || action === 'disable' || (action === 'reset' && resetMode === 'FULL_RESET'))) {
+          disconnectedOnline += 1;
+        }
+        this.executeCardAction(card.username, action, resetMode);
+        succeeded += 1;
+      }
+    }
+
+    const msgByAction = {
+      disconnect:
+        disconnectedOnline > 0
+          ? `تم فصل ${disconnectedOnline} جلسة نشطة من أصل ${targetRows.length} كرت محدد`
+          : 'لا توجد جلسات متصلة حالياً ضمن الكروت المحددة',
+      disable: `تم تعطيل ${succeeded} كرت بنجاح` + (disconnectedOnline ? ` (وفصل ${disconnectedOnline} جلسة نشطة)` : ''),
+      enable: `تم تمكين ${succeeded} كرت وإعادتها للعمل بنجاح`,
+      reset:
+        resetMode === 'MAC_ONLY'
+          ? `تم فك قفل الماك أدريس لـ ${succeeded} كرت بنجاح`
+          : resetMode === 'DATA_TIME'
+            ? `تم تصفير استهلاك البيانات والوقت لـ ${succeeded} كرت بنجاح`
+            : `تم التصفير الشامل لـ ${succeeded} كرت وإعادتها ككروت جديدة`,
+      delete:
+        `تم حذف ${succeeded} كرت نهائياً من النظام وجداول FreeRADIUS` +
+        (disconnectedOnline ? ` (تم فصل ${disconnectedOnline} جلسة نشطة قبل الحذف)` : '') +
+        (skipped ? ` — تم استثناء ${skipped} كرت نشط` : ''),
+    };
+
+    return {
+      totalTargeted: targetRows.length,
+      succeeded,
+      skipped,
+      disconnectedOnline,
+      action,
+      message: msgByAction[action],
+    };
+  }
+
+  exportCards(actor, payload = {}) {
+    const { rows } = this._resolveBulkTargets(actor, payload);
+    const cards = rows.slice(0, 5000).map((c) => ({
+      username: c.username,
+      cleartext_password: c.cleartext_password,
+      serial_number: c.serial_number,
+      status: c.status,
+      profile_name: c.profile_name,
+      profile_display_name: c.profile_display_name,
+      batch_code: c.batch_code,
+      reseller_username: c.reseller_username,
+      first_used_at: c.first_used_at,
+      expires_at: c.expires_at,
+      created_at: c.created_at,
+    }));
+    return { cards };
+  }
 }
 
 const store = new RadiusEngine();
@@ -1655,6 +1896,219 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       font-weight: 700;
       display: none;
     }
+    /* Pagination, Multi-Select & Bulk Action Bar */
+    .pill-count {
+      display: inline-block;
+      margin-right: 4px;
+      padding: 1px 6px;
+      border-radius: 99px;
+      background: rgba(15, 23, 42, 0.08);
+      color: inherit;
+      font-size: 10.5px;
+      font-weight: 800;
+      font-family: Consolas, Monaco, monospace;
+    }
+    .pill-btn.active .pill-count {
+      background: rgba(255, 255, 255, 0.22);
+      color: #fff;
+    }
+    .cards-checkbox {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      accent-color: var(--primary);
+      vertical-align: middle;
+    }
+    tr.row-selected td { background: #eef2ff !important; }
+    .cards-bulk-bar {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+      position: sticky;
+      top: 10px;
+      z-index: 40;
+      background: linear-gradient(135deg, #1e1b4b, #312e81);
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 12px;
+      margin-bottom: 10px;
+      box-shadow: 0 10px 24px -6px rgba(30, 27, 75, 0.35);
+    }
+    .cards-bulk-bar.open { display: flex; }
+    .bulk-bar-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .bulk-bar-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .bulk-bar-actions .btn { font-size: 12px; padding: 6px 11px; }
+    .bulk-clear-btn {
+      background: rgba(255, 255, 255, 0.14);
+      color: #e2e8f0;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+    }
+    .bulk-clear-btn:hover { background: rgba(255, 255, 255, 0.24); color: #fff; }
+    .select-all-banner {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      background: #eef2ff;
+      color: #312e81;
+      border: 1px solid #c7d2fe;
+      border-radius: 10px;
+      padding: 8px 14px;
+      margin-bottom: 10px;
+      font-size: 12.5px;
+      font-weight: 700;
+    }
+    .select-all-banner.open { display: flex; }
+    .select-all-link {
+      background: #4f46e5;
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      padding: 4px 10px;
+      font-size: 11.5px;
+      font-weight: 800;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .select-all-link:hover { background: #4338ca; }
+    #cards-table-wrap.is-loading {
+      opacity: 0.55;
+      pointer-events: none;
+      transition: opacity 0.15s ease;
+    }
+    .pagination-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+      font-size: 12.5px;
+      color: #475569;
+    }
+    .pg-controls {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+    .pg-btn {
+      background: #f8fafc;
+      color: #334155;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
+      min-width: 32px;
+    }
+    .pg-btn:hover:not(:disabled) { background: #eef2ff; border-color: #818cf8; color: #4338ca; }
+    .pg-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .pg-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .pg-jump-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-right: 6px;
+      font-size: 12px;
+    }
+    .pg-jump-input {
+      width: 56px;
+      padding: 4px 7px;
+      border: 1px solid #cbd5e1;
+      border-radius: 7px;
+      font-size: 12px;
+      font-family: Consolas, monospace;
+      text-align: center;
+    }
+    /* Smart Bulk Confirmation & Cleanup Modal */
+    .confirm-card {
+      background: #fff;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      width: 100%;
+      max-width: 490px;
+      box-shadow: 0 25px 50px rgba(15, 23, 42, 0.32);
+      overflow: hidden;
+    }
+    .confirm-head {
+      padding: 14px 18px;
+      background: #f8fafc;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 800;
+      font-size: 15px;
+      color: #0f172a;
+    }
+    .confirm-body {
+      padding: 16px 18px;
+      font-size: 13px;
+      color: #334155;
+      line-height: 1.6;
+    }
+    .confirm-foot {
+      padding: 12px 18px;
+      background: #f8fafc;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .stat-chips-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin: 10px 0;
+    }
+    .stat-chip {
+      padding: 4px 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 800;
+      border: 1px solid transparent;
+    }
+    .warn-box {
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      color: #92400e;
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-top: 10px;
+      font-size: 12.5px;
+      font-weight: 700;
+    }
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      font-size: 12.5px;
+      font-weight: 700;
+      color: #1e293b;
+      cursor: pointer;
+    }
     /* Printable A4 Sheet */
     .a4-sheet {
       background: #fff;
@@ -1947,7 +2401,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       </section>
 
       <!-- ================================================================= -->
-      <!-- TAB 2: ALL CARDS & USERS DIRECTORY (With Status Filters & Search) -->
+      <!-- TAB 2: ALL CARDS & USERS DIRECTORY (Pagination, Filters & Bulk)   -->
       <!-- ================================================================= -->
       <section id="tab-cards" style="display:none;">
         <div class="card">
@@ -1955,7 +2409,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             <div>
               <span>🗂️ إدارة جميع الكروت والمستخدمين في النظام</span>
               <p style="font-size:12px; font-weight:400; color:#64748b; margin-top:3px;">
-                اضغط على رقم الكرت لفتح نافذة <b>تفاصيل المستخدم (User Details)</b> وتعديل بياناته أو عرض جلساته.
+                اضغط على رقم الكرت لفتح نافذة <b>تفاصيل المستخدم (User Details)</b>، أو حدد عدة كروت لتنفيذ إجراءات جماعية دفعة واحدة (يدعم <b>Shift+Click</b> للتحديد السريع).
               </p>
             </div>
             <div class="toolbar-controls">
@@ -1964,30 +2418,87 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 id="cards-search"
                 class="search-input"
                 placeholder="🔍 بحث برقم الكرت أو MAC أو IP..."
-                oninput="loadCardsDirectory()"
+                oninput="onCardsSearchInput()"
               />
-              <select id="cards-profile-filter" class="filter-select" onchange="loadCardsDirectory()">
+              <select id="cards-profile-filter" class="filter-select" onchange="onCardsFilterChange()">
                 <option value="ALL">جميع الباقات</option>
+              </select>
+              <select id="cards-batch-filter" class="filter-select" onchange="onCardsFilterChange()">
+                <option value="ALL">جميع الدفعات</option>
+              </select>
+              <select id="cards-reseller-filter" class="filter-select" onchange="onCardsFilterChange()" style="display:none;">
+                <option value="ALL">جميع الموزعين</option>
+              </select>
+              <select id="cards-sort-filter" class="filter-select" onchange="onCardsFilterChange()">
+                <option value="newest">الأحدث أولاً</option>
+                <option value="oldest">الأقدم أولاً</option>
+                <option value="expires_asc">الأقرب للانتهاء</option>
+                <option value="username_asc">ترتيب برقم الكرت</option>
               </select>
             </div>
           </div>
 
-          <!-- Status Filter Pills -->
+          <!-- Status Filter Pills + Page Size + Contextual Cleanup -->
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
             <div class="filter-pills" id="cards-status-pills">
-              <button class="pill-btn active" onclick="filterCardsByStatus('ALL')" data-status="ALL">الكل</button>
-              <button class="pill-btn" onclick="filterCardsByStatus('UNUSED')" data-status="UNUSED">🟦 الكروت المتاحة (غير مستخدمة)</button>
-              <button class="pill-btn" onclick="filterCardsByStatus('ACTIVE')" data-status="ACTIVE">🟩 الكروت النشطة</button>
-              <button class="pill-btn" onclick="filterCardsByStatus('EXPIRED')" data-status="EXPIRED">🟧 الكروت المنتهية</button>
-              <button class="pill-btn" onclick="filterCardsByStatus('DISABLED')" data-status="DISABLED">🟥 الكروت المعطلة</button>
+              <button class="pill-btn active" onclick="filterCardsByStatus('ALL')" data-status="ALL">الكل <span class="pill-count" id="pill-cnt-ALL">0</span></button>
+              <button class="pill-btn" onclick="filterCardsByStatus('UNUSED')" data-status="UNUSED">🟦 المتاحة <span class="pill-count" id="pill-cnt-UNUSED">0</span></button>
+              <button class="pill-btn" onclick="filterCardsByStatus('ACTIVE')" data-status="ACTIVE">🟩 النشطة <span class="pill-count" id="pill-cnt-ACTIVE">0</span></button>
+              <button class="pill-btn" onclick="filterCardsByStatus('EXPIRED')" data-status="EXPIRED">🟧 المنتهية <span class="pill-count" id="pill-cnt-EXPIRED">0</span></button>
+              <button class="pill-btn" onclick="filterCardsByStatus('DISABLED')" data-status="DISABLED">🟥 المعطلة <span class="pill-count" id="pill-cnt-DISABLED">0</span></button>
             </div>
-            <span id="cards-count-label" style="font-size:12px; font-weight:800; color:#475569;"></span>
+            <div class="toolbar-controls">
+              <button id="expired-cleanup-btn" class="btn btn-danger btn-xs" style="display:none;" onclick="openExpiredCleanupModal()">
+                🧹 تنظيف الكروت المنتهية
+              </button>
+              <label style="font-size:12px; font-weight:700; color:#475569; display:inline-flex; align-items:center; gap:5px;">
+                عرض بالصفحة:
+                <select id="cards-limit-select" class="filter-select" style="padding:5px 8px; font-size:12px;" onchange="onCardsLimitChange(this.value)">
+                  <option value="20">20</option>
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                  <option value="250">250</option>
+                  <option value="500">500</option>
+                  <option value="1000">1000</option>
+                </select>
+              </label>
+              <span id="cards-count-label" style="font-size:12px; font-weight:800; color:#475569;"></span>
+            </div>
           </div>
 
-          <div class="table-wrap">
+          <!-- Contextual Bulk Actions Bar (Hidden until >= 1 card is selected) -->
+          <div class="cards-bulk-bar" id="cards-bulk-bar">
+            <div class="bulk-bar-info">
+              <span id="bulk-selected-label">تم تحديد 0 كرت</span>
+              <button class="btn btn-xs bulk-clear-btn" onclick="clearCardsSelection()">✕ إلغاء التحديد</button>
+            </div>
+            <div class="bulk-bar-actions">
+              <button class="btn btn-danger" onclick="openBulkConfirm('delete')">🗑️ حذف المحدد</button>
+              <button class="btn btn-amber" onclick="openBulkConfirm('disable')">🚫 تعطيل</button>
+              <button class="btn btn-emerald" onclick="openBulkConfirm('enable')">✅ تمكين</button>
+              <div class="reset-wrap">
+                <button class="btn btn-light" onclick="toggleResetMenu('bulk-reset-menu', event)">🔄 تصفير ▾</button>
+                <div class="reset-menu" id="bulk-reset-menu">
+                  <button class="reset-item" onclick="openBulkConfirm('reset', 'DATA_TIME')">📊 تصفير الاستهلاك والوقت فقط</button>
+                  <button class="reset-item" onclick="openBulkConfirm('reset', 'MAC_ONLY')">🔓 فك قفل الماك أدريس فقط</button>
+                  <button class="reset-item" style="color:#dc2626;" onclick="openBulkConfirm('reset', 'FULL_RESET')">♻️ تصفير شامل وإعادة الكروت كجديدة</button>
+                </div>
+              </div>
+              <button class="btn btn-light" onclick="openBulkConfirm('disconnect')">⛔ فصل (CoA)</button>
+              <button class="btn btn-light" onclick="exportSelectedCardsCsv()">📥 تصدير CSV</button>
+            </div>
+          </div>
+
+          <!-- Gmail-style Select All Matching Filter Banner -->
+          <div class="select-all-banner" id="select-all-filtered-banner"></div>
+
+          <div class="table-wrap" id="cards-table-wrap">
             <table>
               <thead>
                 <tr>
+                  <th style="width:36px; text-align:center;">
+                    <input type="checkbox" id="cards-select-all" class="cards-checkbox" onchange="toggleSelectAllPage(this.checked)" title="تحديد / إلغاء تحديد الصفحة الحالية" />
+                  </th>
                   <th>رقم الكرت / المستخدم</th>
                   <th>كلمة المرور</th>
                   <th>الباقة (Profile)</th>
@@ -2003,6 +2514,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               <tbody id="cards-tbody"></tbody>
             </table>
           </div>
+
+          <div class="pagination-bar" id="cards-pagination-bar"></div>
         </div>
       </section>
 
@@ -2405,6 +2918,57 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- ===================================================================== -->
+  <!-- SMART BULK CONFIRMATION MODAL                                         -->
+  <!-- ===================================================================== -->
+  <div class="modal-backdrop" id="bulk-confirm-modal" onclick="if(event.target===this) closeBulkConfirmModal()">
+    <div class="confirm-card">
+      <div class="confirm-head">
+        <span id="bulk-confirm-title">تأكيد الإجراء الجماعي</span>
+        <button class="btn btn-light btn-xs" onclick="closeBulkConfirmModal()">✕</button>
+      </div>
+      <div class="confirm-body" id="bulk-confirm-body"></div>
+      <div class="confirm-foot">
+        <button class="btn btn-light" onclick="closeBulkConfirmModal()">إلغاء</button>
+        <button class="btn btn-danger" id="bulk-confirm-submit-btn" onclick="executePendingBulkAction()">تنفيذ الإجراء</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- QUICK EXPIRED CLEANUP MODAL                                           -->
+  <!-- ===================================================================== -->
+  <div class="modal-backdrop" id="expired-cleanup-modal" onclick="if(event.target===this) closeExpiredCleanupModal()">
+    <div class="confirm-card">
+      <div class="confirm-head">
+        <span>🧹 تنظيف الكروت المنتهية</span>
+        <button class="btn btn-light btn-xs" onclick="closeExpiredCleanupModal()">✕</button>
+      </div>
+      <div class="confirm-body">
+        <p style="margin-bottom:10px;">اختر نطاق الكروت المنتهية المراد حذفها نهائياً من النظام وجداول FreeRADIUS:</p>
+        <div class="field">
+          <label>نطاق التنظيف</label>
+          <select id="expired-cleanup-days" onchange="updateExpiredCleanupPreview()">
+            <option value="0">جميع الكروت المنتهية (ضمن الفلاتر الحالية)</option>
+            <option value="7">الكروت المنتهية منذ أكثر من 7 أيام</option>
+            <option value="30">الكروت المنتهية منذ أكثر من 30 يوماً</option>
+          </select>
+        </div>
+        <div id="expired-cleanup-preview" class="warn-box" style="background:#f8fafc; border-color:#cbd5e1; color:#1e293b;">
+          جاري حساب عدد الكروت المطابقة...
+        </div>
+        <label class="check-row" style="margin-top:12px;">
+          <input type="checkbox" id="expired-cleanup-confirm-check" class="cards-checkbox" />
+          <span>أؤكد أنني أرغب بالحذف النهائي ولا يمكن التراجع عن ذلك</span>
+        </label>
+      </div>
+      <div class="confirm-foot">
+        <button class="btn btn-light" onclick="closeExpiredCleanupModal()">إلغاء</button>
+        <button class="btn btn-danger" id="expired-cleanup-submit-btn" onclick="executeExpiredCleanup()">🗑️ حذف الكروت المنتهية</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let currentTab = 'dashboard';
     let currentActorId = 1;
@@ -2413,6 +2977,25 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     let currentProfiles = [];
     let activeModalUsername = null;
     let showModalSessions = false;
+
+    const ALLOWED_CARD_LIMITS = [20, 50, 100, 250, 500, 1000];
+    let savedCardLimit = 50;
+    try {
+      const rawLim = Number(localStorage.getItem('radiuspro_cards_limit'));
+      if (ALLOWED_CARD_LIMITS.includes(rawLim)) savedCardLimit = rawLim;
+    } catch {}
+    let cardsPage = 1;
+    let cardsLimit = savedCardLimit;
+    let currentPageCards = [];
+    let currentCardsPagination = { page: 1, limit: savedCardLimit, total: 0, totalPages: 1 };
+    let currentCardsStatusCounts = { ALL: 0, UNUSED: 0, ACTIVE: 0, EXPIRED: 0, DISABLED: 0 };
+    let selectedCardUsernames = new Set();
+    let selectAllFiltered = false;
+    let lastCheckedCardIndex = null;
+    let cardsSearchTimer = null;
+    let cardsFetchController = null;
+    let pendingBulkContext = null;
+    let currentActorRole = 'SUPER_ADMIN';
 
     function formatBytes(bytes) {
       const b = Number(bytes) || 0;
@@ -2519,6 +3102,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         closeOpenResetMenus();
         const modal = document.getElementById('user-details-modal');
         if (modal && modal.classList.contains('open')) closeUserModal();
+        const bulkModal = document.getElementById('bulk-confirm-modal');
+        if (bulkModal && bulkModal.classList.contains('open')) closeBulkConfirmModal();
+        const cleanModal = document.getElementById('expired-cleanup-modal');
+        if (cleanModal && cleanModal.classList.contains('open')) closeExpiredCleanupModal();
       }
     });
 
@@ -2595,6 +3182,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (tab === 'cards') {
         if (statusFilter) {
           currentCardsStatusFilter = statusFilter;
+          cardsPage = 1;
+          clearCardsSelection(false);
           updateStatusPillsUI();
         }
         loadCardsDirectory();
@@ -2608,16 +3197,49 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       document.querySelectorAll('#cards-status-pills .pill-btn').forEach((btn) => {
         btn.classList.toggle('active', btn.getAttribute('data-status') === currentCardsStatusFilter);
       });
+      const cleanupBtn = document.getElementById('expired-cleanup-btn');
+      if (cleanupBtn) {
+        const expCount = Number(currentCardsStatusCounts.EXPIRED || 0);
+        cleanupBtn.style.display = (currentCardsStatusFilter === 'EXPIRED' && expCount > 0) ? 'inline-flex' : 'none';
+      }
     }
 
     function filterCardsByStatus(status) {
       currentCardsStatusFilter = status;
+      cardsPage = 1;
+      clearCardsSelection(false);
       updateStatusPillsUI();
+      loadCardsDirectory();
+    }
+
+    function onCardsFilterChange() {
+      cardsPage = 1;
+      clearCardsSelection(false);
+      loadCardsDirectory();
+    }
+
+    function onCardsSearchInput() {
+      if (cardsSearchTimer) clearTimeout(cardsSearchTimer);
+      cardsSearchTimer = setTimeout(() => {
+        cardsPage = 1;
+        clearCardsSelection(false);
+        loadCardsDirectory();
+      }, 300);
+    }
+
+    function onCardsLimitChange(val) {
+      const n = Number(val);
+      cardsLimit = ALLOWED_CARD_LIMITS.includes(n) ? n : 50;
+      try { localStorage.setItem('radiuspro_cards_limit', String(cardsLimit)); } catch {}
+      cardsPage = 1;
+      clearCardsSelection(false);
       loadCardsDirectory();
     }
 
     function changeActor(val) {
       currentActorId = Number(val);
+      cardsPage = 1;
+      clearCardsSelection(false);
       refreshAll();
     }
 
@@ -2680,68 +3302,557 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
-    async function loadCardsDirectory() {
-      const q = document.getElementById('cards-search')?.value || '';
-      const profId = document.getElementById('cards-profile-filter')?.value || 'ALL';
-      const data = await api(
-        '/api/vouchers/cards?status=' + encodeURIComponent(currentCardsStatusFilter) +
-        '&profileId=' + encodeURIComponent(profId) +
-        '&search=' + encodeURIComponent(q)
-      );
+    function getCurrentCardsFilters(extra = {}) {
+      return {
+        status: currentCardsStatusFilter,
+        profileId: document.getElementById('cards-profile-filter')?.value || 'ALL',
+        batchId: document.getElementById('cards-batch-filter')?.value || 'ALL',
+        resellerId: currentActorRole === 'SUPER_ADMIN'
+          ? (document.getElementById('cards-reseller-filter')?.value || 'ALL')
+          : 'ALL',
+        search: (document.getElementById('cards-search')?.value || '').trim(),
+        sort: document.getElementById('cards-sort-filter')?.value || 'newest',
+        ...extra
+      };
+    }
 
-      document.getElementById('cards-count-label').textContent = 'عدد الكروت المعروضة: ' + data.cards.length + ' كرت';
-      const tbody = document.getElementById('cards-tbody');
-      if (!data.cards.length) {
-        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; padding:28px; color:#94a3b8;">لا توجد كروت مطابقة للفلتر المحدد</td></tr>';
+    function updateCardsStatusCountsUI(counts) {
+      if (!counts) return;
+      currentCardsStatusCounts = counts;
+      ['ALL', 'UNUSED', 'ACTIVE', 'EXPIRED', 'DISABLED'].forEach((st) => {
+        const el = document.getElementById('pill-cnt-' + st);
+        if (el) el.textContent = Number(counts[st] || 0).toLocaleString('en-US');
+      });
+      updateStatusPillsUI();
+    }
+
+    function clearCardsSelection(updateUi = true) {
+      selectedCardUsernames.clear();
+      selectAllFiltered = false;
+      lastCheckedCardIndex = null;
+      if (updateUi) updateBulkSelectionUI();
+    }
+
+    function handleCardCheckboxClick(ev, idx, username) {
+      ev.stopPropagation();
+      const checked = Boolean(ev.target.checked);
+
+      if (ev.shiftKey && lastCheckedCardIndex !== null && currentPageCards.length > 0) {
+        const start = Math.min(lastCheckedCardIndex, idx);
+        const end = Math.max(lastCheckedCardIndex, idx);
+        for (let i = start; i <= end; i++) {
+          const item = currentPageCards[i];
+          if (!item) continue;
+          if (checked) selectedCardUsernames.add(item.username);
+          else selectedCardUsernames.delete(item.username);
+        }
+      } else {
+        if (checked) selectedCardUsernames.add(username);
+        else selectedCardUsernames.delete(username);
+      }
+
+      if (!checked) selectAllFiltered = false;
+      lastCheckedCardIndex = idx;
+      updateBulkSelectionUI();
+    }
+
+    function toggleSelectAllPage(checked) {
+      selectAllFiltered = false;
+      lastCheckedCardIndex = null;
+      for (const c of currentPageCards) {
+        if (checked) selectedCardUsernames.add(c.username);
+        else selectedCardUsernames.delete(c.username);
+      }
+      updateBulkSelectionUI();
+    }
+
+    function enableSelectAllFiltered() {
+      selectAllFiltered = true;
+      updateBulkSelectionUI();
+    }
+
+    function updateBulkSelectionUI() {
+      const pageCount = currentPageCards.length;
+      let selectedOnPage = 0;
+      const checkboxes = document.querySelectorAll('#cards-tbody .card-row-cb');
+      checkboxes.forEach((cb) => {
+        const uname = cb.getAttribute('data-username');
+        const isSel = selectAllFiltered || selectedCardUsernames.has(uname);
+        cb.checked = isSel;
+        if (isSel) selectedOnPage++;
+        const tr = cb.closest('tr');
+        if (tr) tr.classList.toggle('row-selected', isSel);
+      });
+
+      const master = document.getElementById('cards-select-all');
+      if (master) {
+        if (pageCount === 0) {
+          master.checked = false;
+          master.indeterminate = false;
+        } else {
+          master.checked = selectedOnPage === pageCount;
+          master.indeterminate = selectedOnPage > 0 && selectedOnPage < pageCount;
+        }
+      }
+
+      const bar = document.getElementById('cards-bulk-bar');
+      const label = document.getElementById('bulk-selected-label');
+      const totalFiltered = Number(currentCardsPagination.total || 0);
+      const effectiveCount = selectAllFiltered ? totalFiltered : selectedCardUsernames.size;
+
+      if (bar && label) {
+        if (effectiveCount > 0) {
+          bar.classList.add('open');
+          label.textContent = selectAllFiltered
+            ? ('تم تحديد جميع الكروت المطابقة للفلتر: ' + totalFiltered.toLocaleString('en-US') + ' كرت')
+            : ('تم تحديد ' + effectiveCount.toLocaleString('en-US') + ' كرت');
+        } else {
+          bar.classList.remove('open');
+        }
+      }
+
+      const banner = document.getElementById('select-all-filtered-banner');
+      if (banner) {
+        const allPageSelected = pageCount > 0 && selectedOnPage === pageCount;
+        if (selectAllFiltered && totalFiltered > pageCount) {
+          banner.classList.add('open');
+          banner.innerHTML =
+            '<span>تم تحديد جميع الكروت المطابقة للفلتر (<b>' + totalFiltered.toLocaleString('en-US') + '</b> كرت عبر كل الصفحات).</span>' +
+            '<button class="select-all-link" style="background:#475569;" onclick="clearCardsSelection()">إلغاء التحديد الشامل</button>';
+        } else if (allPageSelected && totalFiltered > pageCount) {
+          banner.classList.add('open');
+          banner.innerHTML =
+            '<span>تم تحديد <b>' + pageCount.toLocaleString('en-US') + '</b> كرت في هذه الصفحة.</span>' +
+            '<button class="select-all-link" onclick="enableSelectAllFiltered()">تحديد جميع الكروت المطابقة للفلتر (' + totalFiltered.toLocaleString('en-US') + ' كرت)</button>';
+        } else {
+          banner.classList.remove('open');
+          banner.innerHTML = '';
+        }
+      }
+    }
+
+    function goToCardsPage(targetPage) {
+      const totalPages = Math.max(1, Number(currentCardsPagination.totalPages || 1));
+      const next = Math.min(totalPages, Math.max(1, parseInt(targetPage, 10) || 1));
+      if (next === cardsPage) return;
+      cardsPage = next;
+      loadCardsDirectory();
+    }
+
+    function jumpToCardsPageInput() {
+      const inp = document.getElementById('pg-jump-input');
+      if (!inp) return;
+      goToCardsPage(inp.value);
+    }
+
+    function onPgJumpKeydown(ev) {
+      if (ev.key === 'Enter') jumpToCardsPageInput();
+    }
+
+    function renderCardsPagination() {
+      const bar = document.getElementById('cards-pagination-bar');
+      if (!bar) return;
+      const p = currentCardsPagination;
+      const total = Number(p.total || 0);
+      const page = Number(p.page || 1);
+      const limit = Number(p.limit || cardsLimit);
+      const totalPages = Math.max(1, Number(p.totalPages || 1));
+
+      if (total === 0) {
+        bar.innerHTML = '<span>لا توجد نتائج لعرضها</span>';
         return;
       }
 
-      tbody.innerHTML = data.cards.map((c) => {
-        let statusBadge = '';
-        if (c.status === 'ACTIVE') statusBadge = '<span class="tag tag-emerald">نشط</span>';
-        else if (c.status === 'UNUSED') statusBadge = '<span class="tag tag-indigo">متاح (جديد)</span>';
-        else if (c.status === 'EXPIRED') statusBadge = '<span class="tag tag-amber">منتهي</span>';
-        else statusBadge = '<span class="tag tag-red">معطل</span>';
+      const startIdx = (page - 1) * limit + 1;
+      const endIdx = Math.min(total, startIdx + currentPageCards.length - 1);
 
-        const upB = Number(c.used_upload_bytes) || 0;
-        const downB = Number(c.used_download_bytes) || 0;
-        const totalB = (c.used_total_bytes !== undefined && c.used_total_bytes !== null) ? Number(c.used_total_bytes) : (upB + downB);
-        const firstUsedHtml = c.first_used_at ? formatDateTime(c.first_used_at) : 'لم يُستخدم';
-        const expiryHtml = c.expires_at
-          ? formatDateTime(c.expires_at)
-          : (Number(c.validity_days) > 0 ? c.validity_days + ' يوم من أول دخول' : 'بدون انتهاء');
+      const pageNums = [];
+      const addPage = (n) => {
+        if (n >= 1 && n <= totalPages && !pageNums.includes(n)) pageNums.push(n);
+      };
+      addPage(1);
+      for (let i = page - 2; i <= page + 2; i++) addPage(i);
+      addPage(totalPages);
+      pageNums.sort((a, b) => a - b);
 
-        return \`
-          <tr>
-            <td>
-              <button class="user-link" onclick="openUserModal('\${c.username}')" title="اضغط لعرض وتعديل تفاصيل الكرت">
-                👤 \${c.username}
-              </button>
-            </td>
-            <td class="mono">\${c.cleartext_password}</td>
-            <td>
-              <b>\${c.profile_name || '-'}</b>
-              \${c.profile_display_name && c.profile_display_name !== c.profile_name ? \`<span style="font-size:11px; color:#334155;"> (\${c.profile_display_name})</span>\` : ''}
-              <span style="font-size:11px; color:#64748b;">(\${c.speed_limit ? c.speed_limit : 'Queues'})</span>
-            </td>
-            <td>\${statusBadge}</td>
-            <td class="mono" dir="ltr" style="font-size:11.5px;">
-              <div><b style="color:#4338ca;">\${formatBytes(totalB)}</b>\${c.data_limit_mb ? \` <span style="color:#64748b; font-size:10.5px;">/ \${formatQuotaMb(c.data_limit_mb)}</span>\` : ''}</div>
-              <div style="font-size:10.5px; color:#64748b;">↓ \${formatBytes(downB)} | ↑ \${formatBytes(upB)}</div>
-            </td>
-            <td class="mono">\${formatUptime(c.used_uptime_seconds)}</td>
-            <td style="font-size:11px; line-height:1.45;">
-              <div>أول استخدام: <span class="mono" dir="ltr">\${firstUsedHtml}</span></div>
-              <div style="color:#64748b;">الانتهاء: <span class="mono" dir="ltr">\${expiryHtml}</span></div>
-            </td>
-            <td class="mono" dir="ltr" style="font-size:11.5px;">
-              \${c.modem_ip ? \`<b style="color:#0f172a;">\${c.modem_ip}</b> <span style="color:#64748b;">(\${c.modem_name})</span>\` : '<span style="color:#94a3b8;">لم يتصل بعد</span>'}
-            </td>
-            <td>\${c.reseller_username || 'admin'}</td>
-            <td>\${renderFiveActionsHtml(c.username, c.is_online, c.status, 'dir')}</td>
-          </tr>
-        \`;
-      }).join('');
+      let numsHtml = '';
+      let prev = 0;
+      for (const n of pageNums) {
+        if (prev && n - prev > 1) {
+          numsHtml += '<span style="padding:0 4px; color:#94a3b8;">...</span>';
+        }
+        numsHtml += '<button class="pg-btn ' + (n === page ? 'active' : '') + '" onclick="goToCardsPage(' + n + ')">' + n + '</button>';
+        prev = n;
+      }
+
+      bar.innerHTML =
+        '<div>عرض <b class="mono">' + startIdx.toLocaleString('en-US') + '–' + endIdx.toLocaleString('en-US') + '</b> من أصل <b class="mono">' + total.toLocaleString('en-US') + '</b> كرت (صفحة <b class="mono">' + page + '</b> من <b class="mono">' + totalPages + '</b>)</div>' +
+        '<div class="pg-controls">' +
+          '<button class="pg-btn" ' + (page <= 1 ? 'disabled' : '') + ' onclick="goToCardsPage(1)">الأولى</button>' +
+          '<button class="pg-btn" ' + (page <= 1 ? 'disabled' : '') + ' onclick="goToCardsPage(' + (page - 1) + ')">السابق</button>' +
+          numsHtml +
+          '<button class="pg-btn" ' + (page >= totalPages ? 'disabled' : '') + ' onclick="goToCardsPage(' + (page + 1) + ')">التالي</button>' +
+          '<button class="pg-btn" ' + (page >= totalPages ? 'disabled' : '') + ' onclick="goToCardsPage(' + totalPages + ')">الأخيرة</button>' +
+          (totalPages > 3
+            ? '<span class="pg-jump-wrap">انتقال: <input type="number" id="pg-jump-input" class="pg-jump-input" min="1" max="' + totalPages + '" value="' + page + '" onkeydown="onPgJumpKeydown(event)" /><button class="pg-btn" onclick="jumpToCardsPageInput()">ذهاب</button></span>'
+            : '') +
+        '</div>';
+    }
+
+    async function loadCardsDirectory() {
+      const limitSelect = document.getElementById('cards-limit-select');
+      if (limitSelect && String(limitSelect.value) !== String(cardsLimit)) {
+        limitSelect.value = String(cardsLimit);
+      }
+
+      const f = getCurrentCardsFilters();
+      const wrap = document.getElementById('cards-table-wrap');
+      if (wrap) wrap.classList.add('is-loading');
+
+      if (cardsFetchController) {
+        try { cardsFetchController.abort(); } catch {}
+      }
+      cardsFetchController = new AbortController();
+
+      try {
+        const qs =
+          'status=' + encodeURIComponent(f.status) +
+          '&profileId=' + encodeURIComponent(f.profileId) +
+          '&batchId=' + encodeURIComponent(f.batchId) +
+          '&resellerId=' + encodeURIComponent(f.resellerId) +
+          '&search=' + encodeURIComponent(f.search) +
+          '&sort=' + encodeURIComponent(f.sort) +
+          '&page=' + encodeURIComponent(cardsPage) +
+          '&limit=' + encodeURIComponent(cardsLimit);
+
+        const data = await api('/api/vouchers/cards?' + qs, { signal: cardsFetchController.signal });
+
+        currentPageCards = data.cards || [];
+        currentCardsPagination = data.pagination || {
+          page: cardsPage,
+          limit: cardsLimit,
+          total: currentPageCards.length,
+          totalPages: 1
+        };
+        cardsPage = currentCardsPagination.page || 1;
+        if (data.statusCounts) updateCardsStatusCountsUI(data.statusCounts);
+
+        const totalFiltered = Number(currentCardsPagination.total || 0);
+        document.getElementById('cards-count-label').textContent =
+          'المعروض: ' + currentPageCards.length.toLocaleString('en-US') + ' | الإجمالي المطابق: ' + totalFiltered.toLocaleString('en-US') + ' كرت';
+
+        const tbody = document.getElementById('cards-tbody');
+        if (!currentPageCards.length) {
+          tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding:28px; color:#94a3b8;">لا توجد كروت مطابقة للفلتر المحدد</td></tr>';
+          renderCardsPagination();
+          updateBulkSelectionUI();
+          return;
+        }
+
+        tbody.innerHTML = currentPageCards.map((c, idx) => {
+          let statusBadge = '';
+          if (c.status === 'ACTIVE') statusBadge = '<span class="tag tag-emerald">نشط</span>';
+          else if (c.status === 'UNUSED') statusBadge = '<span class="tag tag-indigo">متاح (جديد)</span>';
+          else if (c.status === 'EXPIRED') statusBadge = '<span class="tag tag-amber">منتهي</span>';
+          else statusBadge = '<span class="tag tag-red">معطل</span>';
+
+          const upB = Number(c.used_upload_bytes) || 0;
+          const downB = Number(c.used_download_bytes) || 0;
+          const totalB = (c.used_total_bytes !== undefined && c.used_total_bytes !== null) ? Number(c.used_total_bytes) : (upB + downB);
+          const firstUsedHtml = c.first_used_at ? formatDateTime(c.first_used_at) : 'لم يُستخدم';
+          const expiryHtml = c.expires_at
+            ? formatDateTime(c.expires_at)
+            : (Number(c.validity_days) > 0 ? c.validity_days + ' يوم من أول دخول' : 'بدون انتهاء');
+          const isChecked = selectAllFiltered || selectedCardUsernames.has(c.username);
+
+          return \`
+            <tr class="\${isChecked ? 'row-selected' : ''}">
+              <td style="text-align:center;">
+                <input type="checkbox" class="cards-checkbox card-row-cb" data-username="\${c.username}" \${isChecked ? 'checked' : ''} onclick="handleCardCheckboxClick(event, \${idx}, '\${c.username}')" />
+              </td>
+              <td>
+                <button class="user-link" onclick="openUserModal('\${c.username}')" title="اضغط لعرض وتعديل تفاصيل الكرت">
+                  👤 \${c.username}
+                </button>
+              </td>
+              <td class="mono">\${c.cleartext_password}</td>
+              <td>
+                <b>\${c.profile_name || '-'}</b>
+                \${c.profile_display_name && c.profile_display_name !== c.profile_name ? \`<span style="font-size:11px; color:#334155;"> (\${c.profile_display_name})</span>\` : ''}
+                <span style="font-size:11px; color:#64748b;">(\${c.speed_limit ? c.speed_limit : 'Queues'})</span>
+              </td>
+              <td>\${statusBadge}</td>
+              <td class="mono" dir="ltr" style="font-size:11.5px;">
+                <div><b style="color:#4338ca;">\${formatBytes(totalB)}</b>\${c.data_limit_mb ? \` <span style="color:#64748b; font-size:10.5px;">/ \${formatQuotaMb(c.data_limit_mb)}</span>\` : ''}</div>
+                <div style="font-size:10.5px; color:#64748b;">↓ \${formatBytes(downB)} | ↑ \${formatBytes(upB)}</div>
+              </td>
+              <td class="mono">\${formatUptime(c.used_uptime_seconds)}</td>
+              <td style="font-size:11px; line-height:1.45;">
+                <div>أول استخدام: <span class="mono" dir="ltr">\${firstUsedHtml}</span></div>
+                <div style="color:#64748b;">الانتهاء: <span class="mono" dir="ltr">\${expiryHtml}</span></div>
+              </td>
+              <td class="mono" dir="ltr" style="font-size:11.5px;">
+                \${c.modem_ip ? \`<b style="color:#0f172a;">\${c.modem_ip}</b> <span style="color:#64748b;">(\${c.modem_name})</span>\` : '<span style="color:#94a3b8;">لم يتصل بعد</span>'}
+              </td>
+              <td>\${c.reseller_username || 'admin'}</td>
+              <td>\${renderFiveActionsHtml(c.username, c.is_online, c.status, 'dir')}</td>
+            </tr>
+          \`;
+        }).join('');
+
+        renderCardsPagination();
+        updateBulkSelectionUI();
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;
+        showToast('error', e.message || 'تعذر تحميل قائمة الكروت');
+      } finally {
+        if (wrap) wrap.classList.remove('is-loading');
+      }
+    }
+
+    function buildBulkPayload(extra = {}) {
+      if (selectAllFiltered) {
+        return {
+          selectAllFiltered: true,
+          filters: getCurrentCardsFilters(),
+          ...extra
+        };
+      }
+      return {
+        selectAllFiltered: false,
+        usernames: Array.from(selectedCardUsernames),
+        ...extra
+      };
+    }
+
+    function closeBulkConfirmModal() {
+      const m = document.getElementById('bulk-confirm-modal');
+      if (m) m.classList.remove('open');
+      pendingBulkContext = null;
+    }
+
+    async function openBulkConfirm(action, resetMode = 'FULL_RESET') {
+      closeOpenResetMenus();
+      const count = selectAllFiltered ? Number(currentCardsPagination.total || 0) : selectedCardUsernames.size;
+      if (count === 0) {
+        showToast('error', 'حدد كرتاً واحداً على الأقل أولاً');
+        return;
+      }
+
+      const actionTitles = {
+        delete: '🗑️ تأكيد الحذف الجماعي للكروت',
+        disable: '🚫 تأكيد تعطيل الكروت المحددة',
+        enable: '✅ تأكيد تمكين الكروت المحددة',
+        disconnect: '⛔ تأكيد فصل الجلسات المتصلة (CoA)',
+        reset: resetMode === 'MAC_ONLY'
+          ? '🔓 تأكيد فك قفل الماك أدريس'
+          : (resetMode === 'DATA_TIME' ? '📊 تأكيد تصفير الاستهلاك والوقت' : '♻️ تأكيد التصفير الشامل للكروت')
+      };
+
+      const titleEl = document.getElementById('bulk-confirm-title');
+      const bodyEl = document.getElementById('bulk-confirm-body');
+      const submitBtn = document.getElementById('bulk-confirm-submit-btn');
+      const modal = document.getElementById('bulk-confirm-modal');
+
+      titleEl.textContent = actionTitles[action] || 'تأكيد الإجراء الجماعي';
+      bodyEl.innerHTML = '<div style="padding:12px 0; color:#64748b;">جاري فحص تفاصيل الكروت المحددة...</div>';
+      submitBtn.disabled = true;
+      submitBtn.className = 'btn ' + (action === 'delete' ? 'btn-danger' : (action === 'enable' ? 'btn-emerald' : 'btn-primary'));
+      submitBtn.textContent = action === 'delete' ? '🗑️ حذف نهائي' : 'تنفيذ الإجراء';
+      modal.classList.add('open');
+
+      try {
+        const basePayload = buildBulkPayload({ action, resetMode });
+        const preview = await api('/api/vouchers/cards/bulk-preview', {
+          method: 'POST',
+          body: JSON.stringify(basePayload)
+        });
+
+        const bd = preview.breakdown || {};
+        const activeOrOnline = Number(bd.ACTIVE || 0) > 0 || Number(preview.onlineCount || 0) > 0;
+        const needsExtraConfirm = action === 'delete' && (preview.total > 50 || activeOrOnline);
+
+        pendingBulkContext = {
+          payload: basePayload,
+          preview,
+          needsExtraConfirm
+        };
+
+        let html = '<p>سيتم تطبيق الإجراء على <b class="mono">' + preview.total.toLocaleString('en-US') + '</b> كرت:</p>';
+        html += '<div class="stat-chips-row">';
+        if (bd.UNUSED) html += '<span class="stat-chip tag-indigo">🟦 متاح: ' + bd.UNUSED + '</span>';
+        if (bd.ACTIVE) html += '<span class="stat-chip tag-emerald">🟩 نشط: ' + bd.ACTIVE + '</span>';
+        if (bd.EXPIRED) html += '<span class="stat-chip tag-amber">🟧 منتهي: ' + bd.EXPIRED + '</span>';
+        if (bd.DISABLED) html += '<span class="stat-chip tag-red">🟥 معطل: ' + bd.DISABLED + '</span>';
+        if (preview.onlineCount) html += '<span class="stat-chip tag-emerald">📡 متصل الآن: ' + preview.onlineCount + '</span>';
+        html += '</div>';
+
+        if (activeOrOnline && (action === 'delete' || action === 'disable' || (action === 'reset' && resetMode === 'FULL_RESET'))) {
+          html += '<div class="warn-box">⚠️ تنبيه: يوجد ضمن التحديد كروت نشطة أو متصلة حالياً (' + (preview.onlineCount || bd.ACTIVE) + '). سيتم فصل جلساتها تلقائياً.</div>';
+          html += '<label class="check-row"><input type="checkbox" id="bulk-exclude-active" class="cards-checkbox" /><span>استثناء الكروت النشطة والمتصلة (تطبيق على البقية فقط: ' + preview.nonActiveCount + ' كرت)</span></label>';
+        }
+
+        if (needsExtraConfirm) {
+          html += '<label class="check-row" style="color:#b91c1c;"><input type="checkbox" id="bulk-safety-check" class="cards-checkbox" /><span>أؤكد أنني أرغب في تنفيذ الحذف النهائي ولا يمكن التراجع عنه</span></label>';
+        }
+
+        bodyEl.innerHTML = html;
+        submitBtn.disabled = preview.total === 0;
+      } catch (e) {
+        bodyEl.innerHTML = '<div class="warn-box" style="background:#fef2f2; border-color:#fecaca; color:#991b1b;">⚠️ ' + e.message + '</div>';
+      }
+    }
+
+    async function executePendingBulkAction() {
+      if (!pendingBulkContext) return;
+      const safetyCb = document.getElementById('bulk-safety-check');
+      if (pendingBulkContext.needsExtraConfirm && safetyCb && !safetyCb.checked) {
+        showToast('error', 'يرجى تحديد مربع التأكيد أولاً لإتمام الحذف الجماعي');
+        return;
+      }
+
+      const excludeActive = Boolean(document.getElementById('bulk-exclude-active')?.checked);
+      const submitBtn = document.getElementById('bulk-confirm-submit-btn');
+      const prevText = submitBtn.textContent;
+      submitBtn.disabled = true;
+      submitBtn.textContent = '⏳ جاري التنفيذ...';
+
+      try {
+        const res = await api('/api/vouchers/cards/bulk-action', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...pendingBulkContext.payload,
+            excludeActive
+          })
+        });
+        closeBulkConfirmModal();
+        clearCardsSelection();
+        showToast('success', res.message);
+        await refreshAll();
+      } catch (e) {
+        showToast('error', e.message);
+        submitBtn.disabled = false;
+        submitBtn.textContent = prevText;
+      }
+    }
+
+    function closeExpiredCleanupModal() {
+      const m = document.getElementById('expired-cleanup-modal');
+      if (m) m.classList.remove('open');
+    }
+
+    function openExpiredCleanupModal() {
+      const cb = document.getElementById('expired-cleanup-confirm-check');
+      if (cb) cb.checked = false;
+      const sel = document.getElementById('expired-cleanup-days');
+      if (sel) sel.value = '0';
+      document.getElementById('expired-cleanup-modal').classList.add('open');
+      updateExpiredCleanupPreview();
+    }
+
+    async function updateExpiredCleanupPreview() {
+      const days = Number(document.getElementById('expired-cleanup-days')?.value || 0);
+      const box = document.getElementById('expired-cleanup-preview');
+      const btn = document.getElementById('expired-cleanup-submit-btn');
+      box.textContent = 'جاري حساب الكروت المنتهية المطابقة...';
+      btn.disabled = true;
+      try {
+        const filters = getCurrentCardsFilters({
+          status: 'EXPIRED',
+          expiredOlderThanDays: days
+        });
+        const preview = await api('/api/vouchers/cards/bulk-preview', {
+          method: 'POST',
+          body: JSON.stringify({ selectAllFiltered: true, filters })
+        });
+        box.innerHTML = 'عدد الكروت المنتهية التي سيتم حذفها نهائياً: <b class="mono">' + preview.total.toLocaleString('en-US') + '</b> كرت';
+        btn.disabled = preview.total === 0;
+      } catch (e) {
+        box.textContent = '⚠️ ' + e.message;
+      }
+    }
+
+    async function executeExpiredCleanup() {
+      const cb = document.getElementById('expired-cleanup-confirm-check');
+      if (!cb || !cb.checked) {
+        showToast('error', 'يرجى تحديد مربع تأكيد الحذف النهائي أولاً');
+        return;
+      }
+      const days = Number(document.getElementById('expired-cleanup-days')?.value || 0);
+      const btn = document.getElementById('expired-cleanup-submit-btn');
+      btn.disabled = true;
+      btn.textContent = '⏳ جاري التنظيف...';
+      try {
+        const filters = getCurrentCardsFilters({
+          status: 'EXPIRED',
+          expiredOlderThanDays: days
+        });
+        const res = await api('/api/vouchers/cards/bulk-action', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'delete', selectAllFiltered: true, filters })
+        });
+        closeExpiredCleanupModal();
+        clearCardsSelection();
+        showToast('success', res.message);
+        await refreshAll();
+      } catch (e) {
+        showToast('error', e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🗑️ حذف الكروت المنتهية';
+      }
+    }
+
+    function csvEscapeCell(val) {
+      const str = val === null || val === undefined ? '' : String(val);
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+
+    async function exportSelectedCardsCsv() {
+      const count = selectAllFiltered ? Number(currentCardsPagination.total || 0) : selectedCardUsernames.size;
+      if (count === 0) {
+        showToast('error', 'حدد كرتاً واحداً على الأقل للتصدير');
+        return;
+      }
+      try {
+        const data = await api('/api/vouchers/cards/export', {
+          method: 'POST',
+          body: JSON.stringify(buildBulkPayload())
+        });
+        const rows = data.cards || [];
+        if (!rows.length) {
+          showToast('error', 'لا توجد كروت متاحة للتصدير');
+          return;
+        }
+        const headers = ['username', 'password', 'serial_number', 'status', 'profile', 'batch_code', 'reseller', 'first_used_at', 'expires_at', 'created_at'];
+        const lines = [headers.join(',')];
+        rows.forEach((c) => {
+          lines.push([
+            csvEscapeCell(c.username),
+            csvEscapeCell(c.cleartext_password),
+            csvEscapeCell(c.serial_number),
+            csvEscapeCell(c.status),
+            csvEscapeCell(c.profile_display_name || c.profile_name || ''),
+            csvEscapeCell(c.batch_code || ''),
+            csvEscapeCell(c.reseller_username || 'admin'),
+            csvEscapeCell(c.first_used_at || ''),
+            csvEscapeCell(c.expires_at || ''),
+            csvEscapeCell(c.created_at || '')
+          ].join(','));
+        });
+        const blob = new Blob(['\\uFEFF' + lines.join('\\n')], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'radiuspro-cards-' + new Date().toISOString().slice(0, 10) + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        showToast('success', 'تم تصدير ' + rows.length + ' كرت إلى ملف CSV بنجاح');
+      } catch (e) {
+        showToast('error', e.message);
+      }
     }
 
     let sessionsRefreshing = false;
@@ -3435,6 +4546,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         }
 
         // 1. Actor selector
+        currentActorRole = sys.currentActor.role || 'SUPER_ADMIN';
         const actorSelect = document.getElementById('actor-select');
         actorSelect.innerHTML = sys.availableActors.map((a) => \`
           <option value="\${a.id}" \${a.id === sys.currentActor.id ? 'selected' : ''}>
@@ -3579,6 +4691,32 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             \${p.display_name} (\${p.name})
           </option>
         \`).join('');
+
+        const filterBatchSelect = document.getElementById('cards-batch-filter');
+        if (filterBatchSelect) {
+          const currFilterBatch = filterBatchSelect.value;
+          filterBatchSelect.innerHTML = '<option value="ALL">جميع الدفعات</option>' + (batches || []).map((b) => \`
+            <option value="\${b.id}" \${String(b.id) === String(currFilterBatch) ? 'selected' : ''}>
+              \${b.batch_code} (\${b.quantity} كرت)
+            </option>
+          \`).join('');
+        }
+
+        const filterResellerSelect = document.getElementById('cards-reseller-filter');
+        if (filterResellerSelect) {
+          if (currentActorRole === 'SUPER_ADMIN') {
+            filterResellerSelect.style.display = 'inline-block';
+            const currFilterRes = filterResellerSelect.value;
+            filterResellerSelect.innerHTML = '<option value="ALL">جميع الموزعين</option>' + (resData.resellers || []).map((r) => \`
+              <option value="\${r.id}" \${String(r.id) === String(currFilterRes) ? 'selected' : ''}>
+                \${r.username} (\${r.name})
+              </option>
+            \`).join('');
+          } else {
+            filterResellerSelect.style.display = 'none';
+            filterResellerSelect.value = 'ALL';
+          }
+        }
 
         // 7. Batches Table
         document.getElementById('batches-tbody').innerHTML = batches.length === 0
@@ -3857,46 +4995,60 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // Cards Directory List with Status, Profile & Search filters
+    // Cards Directory List with Pagination, Status, Profile, Batch, Reseller, Sort & Search filters
     if (pathname === '/api/vouchers/cards' && req.method === 'GET') {
-      const status = parsedUrl.searchParams.get('status') || 'ALL';
-      const profileId = parsedUrl.searchParams.get('profileId') || 'ALL';
-      const search = (parsedUrl.searchParams.get('search') || '').trim().toLowerCase();
+      const filters = {
+        status: parsedUrl.searchParams.get('status') || 'ALL',
+        profileId: parsedUrl.searchParams.get('profileId') || 'ALL',
+        batchId: parsedUrl.searchParams.get('batchId') || 'ALL',
+        resellerId: parsedUrl.searchParams.get('resellerId') || 'ALL',
+        search: (parsedUrl.searchParams.get('search') || '').trim(),
+        sort: parsedUrl.searchParams.get('sort') || 'newest',
+        page: parsedUrl.searchParams.get('page') || '1',
+        limit: parsedUrl.searchParams.get('limit') || '50',
+        expiredOlderThanDays: parsedUrl.searchParams.get('expiredOlderThanDays') || '0',
+      };
 
       if (dbStore) {
-        const data = await dbStore.getCardsDirectory(actor, { status, profileId, search });
+        const data = await dbStore.getCardsDirectory(actor, filters);
         return sendJson(res, 200, data);
       }
 
-      let list =
-        actor.role === 'SUPER_ADMIN'
-          ? store.voucher_cards
-          : store.voucher_cards.filter((c) => c.reseller_id === actor.id);
+      const data = store.getCardsDirectory(actor, filters);
+      return sendJson(res, 200, data);
+    }
 
-      if (status !== 'ALL') {
-        list = list.filter((c) => c.status === status);
+    // Bulk Preview (Status breakdown & active count before executing bulk action)
+    if (pathname === '/api/vouchers/cards/bulk-preview' && req.method === 'POST') {
+      const body = await parseBody(req);
+      if (dbStore) {
+        const preview = await dbStore.previewBulkCardAction(actor, body);
+        return sendJson(res, 200, preview);
       }
-      if (profileId !== 'ALL') {
-        list = list.filter((c) => String(c.profile_id) === String(profileId));
-      }
-      if (search) {
-        list = list.filter(
-          (c) =>
-            c.username.toLowerCase().includes(search) ||
-            (c.serial_number && c.serial_number.toLowerCase().includes(search)) ||
-            (c.last_ip && c.last_ip.toLowerCase().includes(search)) ||
-            (c.last_mac && c.last_mac.toLowerCase().includes(search)) ||
-            (c.modem_ip && c.modem_ip.toLowerCase().includes(search))
-        );
-      }
+      const preview = store.previewBulkCardAction(actor, body);
+      return sendJson(res, 200, preview);
+    }
 
-      const activeSet = new Set(store.radacct.map((s) => s.username));
-      const enriched = list.map((c) => ({
-        ...c,
-        is_online: activeSet.has(c.username),
-      }));
+    // Bulk Action (delete, disable, enable, reset, disconnect)
+    if (pathname === '/api/vouchers/cards/bulk-action' && req.method === 'POST') {
+      const body = await parseBody(req);
+      if (dbStore) {
+        const result = await dbStore.executeBulkCardAction(actor, body);
+        return sendJson(res, 200, result);
+      }
+      const result = store.executeBulkCardAction(actor, body);
+      return sendJson(res, 200, result);
+    }
 
-      return sendJson(res, 200, { count: enriched.length, cards: enriched });
+    // Bulk Export Selected / Filtered Cards for CSV
+    if (pathname === '/api/vouchers/cards/export' && req.method === 'POST') {
+      const body = await parseBody(req);
+      if (dbStore) {
+        const exported = await dbStore.exportCards(actor, body);
+        return sendJson(res, 200, exported);
+      }
+      const exported = store.exportCards(actor, body);
+      return sendJson(res, 200, exported);
     }
 
     // Single Card Action (disconnect, disable, enable, reset, delete)
@@ -4274,7 +5426,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const PORT = 4000;
+const PORT = Number(process.env.PORT) || 4000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 RadiusPro Full-Stack Server v2 is LIVE at: http://localhost:${PORT}`);
 });
